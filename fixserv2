@@ -1,0 +1,298 @@
+#!/bin/bash
+
+echo "🔧 Quick fix for SynapseGrid services..."
+
+# Stop all services
+docker-compose down
+
+# Remove version from docker-compose.yml to fix warning
+sed -i '' '/^version:/d' docker-compose.yml
+
+# Fix Gateway - it's looking for app.py instead of main.py
+echo "🛠️ Fixing Gateway service..."
+cat > services/gateway/Dockerfile << 'EOF'
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install fastapi uvicorn redis
+
+# Copy service file
+COPY services/gateway/main.py main.py
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["python", "main.py"]
+EOF
+
+# Fix Dispatcher - it's looking for dispatcher.py
+echo "🛠️ Fixing Dispatcher service..."
+cat > services/dispatcher/Dockerfile << 'EOF'
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install redis
+
+COPY services/dispatcher/main.py main.py
+
+CMD ["python", "main.py"]
+EOF
+
+# Update docker-compose to fix container names and commands
+echo "🛠️ Updating docker-compose.yml..."
+cat > docker-compose.yml << 'EOF'
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: synapse-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    networks:
+      - synapse_network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: synapse-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=synapsegrid
+      - POSTGRES_USER=synapse
+      - POSTGRES_PASSWORD=synapse123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - synapse_network
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: synapse-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - synapse_network
+
+  dispatcher:
+    build:
+      context: .
+      dockerfile: services/dispatcher/Dockerfile
+    container_name: synapse-dispatcher
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+    networks:
+      - synapse_network
+
+  aggregator:
+    build:
+      context: .
+      dockerfile: services/aggregator/Dockerfile
+    container_name: synapse-aggregator
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+    networks:
+      - synapse_network
+
+  node1:
+    build:
+      context: .
+      dockerfile: services/node/Dockerfile
+    container_name: synapse-node-1
+    environment:
+      - NODE_ID=node-001
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+    networks:
+      - synapse_network
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: services/dashboard/Dockerfile
+    container_name: synapse-dashboard
+    ports:
+      - "3000:3000"
+    networks:
+      - synapse_network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: synapse-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - synapse_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: synapse-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - synapse_network
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  synapse_network:
+    driver: bridge
+EOF
+
+# Fix Aggregator Dockerfile
+echo "🛠️ Fixing Aggregator service..."
+cat > services/aggregator/Dockerfile << 'EOF'
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install fastapi uvicorn redis
+
+COPY services/aggregator/main.py main.py
+
+EXPOSE 8081
+
+CMD ["python", "main.py"]
+EOF
+
+# Fix Dashboard Dockerfile
+echo "🛠️ Fixing Dashboard service..."
+cat > services/dashboard/Dockerfile << 'EOF'
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY services/dashboard/main.py main.py
+
+EXPOSE 3000
+
+CMD ["python", "main.py"]
+EOF
+
+# Fix Node Dockerfile
+echo "🛠️ Fixing Node service..."
+cat > services/node/Dockerfile << 'EOF'
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install redis
+
+COPY services/node/main.py main.py
+
+CMD ["python", "main.py"]
+EOF
+
+# Create a simple test script
+echo "🧪 Creating simple test script..."
+cat > scripts/test_api.sh << 'EOF'
+#!/bin/bash
+
+echo "🚀 Testing SynapseGrid API"
+
+# Wait for services
+echo "Waiting for services to start..."
+sleep 5
+
+# Test health endpoint
+echo "Testing health endpoint..."
+health_response=$(curl -s -w "%{http_code}" -o /tmp/health.json "http://localhost:8080/health" 2>/dev/null)
+
+if [ "${health_response: -3}" = "200" ]; then
+    echo "✅ Health check passed"
+    cat /tmp/health.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/health.json
+else
+    echo "❌ Health check failed (HTTP $health_response)"
+    echo "Gateway may not be running on port 8080"
+    exit 1
+fi
+
+echo ""
+
+# Test job submission
+echo "Testing job submission..."
+job_response=$(curl -s -w "%{http_code}" \
+    -X POST "http://localhost:8080/submit" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer test-token" \
+    -H "X-Client-ID: test-client" \
+    -d '{"model_name": "resnet50", "input_data": {"test": "data"}, "priority": 5}' \
+    -o /tmp/job.json 2>/dev/null)
+
+if [ "${job_response: -3}" = "200" ]; then
+    echo "✅ Job submission passed"
+    cat /tmp/job.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/job.json
+else
+    echo "❌ Job submission failed (HTTP $job_response)"
+fi
+
+echo ""
+
+# Test stats
+echo "Testing stats endpoint..."
+stats_response=$(curl -s -w "%{http_code}" "http://localhost:8080/stats" -o /tmp/stats.json 2>/dev/null)
+
+if [ "${stats_response: -3}" = "200" ]; then
+    echo "✅ Stats endpoint passed"
+    cat /tmp/stats.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/stats.json
+else
+    echo "❌ Stats endpoint failed (HTTP $stats_response)"
+fi
+
+echo ""
+echo "🎉 API tests completed!"
+
+# Cleanup
+rm -f /tmp/health.json /tmp/job.json /tmp/stats.json
+EOF
+
+chmod +x scripts/test_api.sh
+
+echo ""
+echo "✅ All fixes applied!"
+echo ""
+echo "Now run:"
+echo "  make start"
+echo "  sleep 10"
+echo "  make test"
+echo ""
+echo "If Gateway still doesn't work, try:"
+echo "  make logs-gateway"
+echo "  docker-compose restart gateway"
+EOF
+
+chmod +x quick_fix.sh
+./quick_fix.sh

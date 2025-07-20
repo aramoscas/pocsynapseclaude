@@ -1,0 +1,13 @@
+syntax = "proto3";
+package synapse;
+service SynapseGateway {
+    rpc SubmitJob(JobSubmissionRequest) returns (JobResponse);
+}
+message JobSubmissionRequest {
+    string client_id = 1;
+    string model_name = 2;
+}
+message JobResponse {
+    string job_id = 1;
+    string status = 2;
+}
