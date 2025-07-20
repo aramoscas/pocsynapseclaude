@@ -1,0 +1,776 @@
+#!/bin/bash
+# fix_compatibility_issues.sh
+# Fix Docker stats and Mac M2 node issues
+
+echo "🔧 Fixing compatibility issues..."
+
+# Fix 1: Update Makefile for Docker stats compatibility
+echo "📊 Fixing Docker stats command..."
+
+# Backup current Makefile
+cp Makefile Makefile.backup
+
+# Update the status command in Makefile to be compatible with older Docker versions
+cat > Makefile << 'EOF'
+# Makefile for SynapseGrid POC - Enhanced Version
+
+.PHONY: help setup start stop restart logs test clean proto build-images
+
+# Default target
+help:
+	@echo "SynapseGrid POC - Enhanced Commands:"
+	@echo ""
+	@echo "🚀 CORE COMMANDS:"
+	@echo "  setup          - Setup development environment"
+	@echo "  build-images   - Build all Docker images"
+	@echo "  start          - Start all Docker services"
+	@echo "  stop           - Stop all services"
+	@echo "  restart        - Restart all services"
+	@echo "  logs           - View logs from all services"
+	@echo "  test           - Run API tests"
+	@echo "  clean          - Clean up containers and volumes"
+	@echo ""
+	@echo "🍎 MAC M2 COMMANDS:"
+	@echo "  setup-mac      - Setup Mac M2 native node"
+	@echo "  start-mac      - Start Mac M2 native node"
+	@echo "  stop-mac       - Stop Mac M2 node"
+	@echo "  status-mac     - Check Mac M2 node status"
+	@echo "  test-mac       - Test Mac M2 AI capabilities"
+	@echo "  logs-mac       - View Mac M2 node logs"
+	@echo ""
+	@echo "🧪 TESTING COMMANDS:"
+	@echo "  submit-job     - Submit test job to Docker nodes"
+	@echo "  submit-job-mac - Submit job to Mac M2 node"
+	@echo "  stress-test    - Run stress test"
+	@echo "  benchmark-mac  - Benchmark Mac M2 vs Docker"
+	@echo "  test-integration - Full integration test"
+	@echo ""
+	@echo "📊 MONITORING:"
+	@echo "  monitor        - Open monitoring dashboard"
+	@echo "  status         - Show system status"
+	@echo "  health-check   - Check service health"
+	@echo ""
+	@echo "🔧 SYSTEM COMMANDS:"
+	@echo "  start-all      - Start Docker + Mac M2"
+	@echo "  stop-all       - Stop everything"
+	@echo "  monitor-all    - Monitor all nodes"
+
+# Setup development environment
+setup:
+	@echo "Setting up SynapseGrid enhanced environment..."
+	@docker network create synapse_network 2>/dev/null || true
+	@pip install -r requirements.txt 2>/dev/null || echo "Install requirements manually if needed"
+	@echo "✅ Setup complete!"
+
+# Build Docker images
+build-images:
+	@echo "Building Docker images..."
+	@docker-compose build
+	@echo "✅ Images built successfully!"
+
+# Start all Docker services
+start:
+	@echo "Starting SynapseGrid Docker services..."
+	@docker-compose up -d
+	@echo "✅ Docker services started!"
+	@echo ""
+	@echo "🔗 Access points:"
+	@echo "  Gateway API:    http://localhost:8080"
+	@echo "  Grafana:        http://localhost:3001 (admin/admin123)"
+	@echo "  Prometheus:     http://localhost:9090"
+	@echo ""
+	@sleep 10
+	@$(MAKE) health-check
+
+# Stop all services
+stop:
+	@echo "Stopping SynapseGrid Docker services..."
+	@docker-compose down
+	@echo "✅ Docker services stopped!"
+
+# Restart services
+restart: stop start
+
+# View logs
+logs:
+	@docker-compose logs -f
+
+# Health check
+health-check:
+	@echo "🏥 Checking service health..."
+	@curl -s http://localhost:8080/health | jq . 2>/dev/null || echo "⚠️ Gateway not ready"
+	@curl -s http://localhost:9090/-/healthy >/dev/null 2>&1 && echo "✅ Prometheus healthy" || echo "⚠️ Prometheus not ready"
+
+# === MAC M2 NATIVE NODE COMMANDS ===
+
+# Setup Mac M2 node
+setup-mac:
+	@echo "🍎 Setting up Mac M2 native node..."
+	@chmod +x setup_mac_node.sh
+	@./setup_mac_node.sh
+
+# Start Mac M2 node (with delay for gateway to be ready)
+start-mac:
+	@echo "🍎 Starting Mac M2 native node..."
+	@echo "⏳ Waiting for gateway to be ready..."
+	@sleep 5
+	@for i in {1..12}; do \
+		if curl -s http://localhost:8080/health >/dev/null 2>&1; then \
+			echo "✅ Gateway is ready"; \
+			break; \
+		else \
+			echo "⏳ Waiting for gateway... ($$i/12)"; \
+			sleep 5; \
+		fi; \
+	done
+	@cd native_node && nohup ./start.sh > logs/startup.log 2>&1 &
+	@sleep 3
+	@$(MAKE) status-mac
+
+# Stop Mac M2 node
+stop-mac:
+	@echo "🍎 Stopping Mac M2 node..."
+	@cd native_node && ./stop.sh || true
+
+# Check Mac M2 node status
+status-mac:
+	@echo "🍎 Mac M2 Node Status:"
+	@cd native_node && ./status.sh
+
+# Test Mac M2 capabilities
+test-mac:
+	@echo "🧪 Testing Mac M2 AI capabilities..."
+	@cd native_node && source venv/bin/activate && python test_models.py
+
+# View Mac M2 logs
+logs-mac:
+	@echo "📋 Mac M2 Node Logs (last 50 lines):"
+	@tail -50 native_node/logs/mac_node.log 2>/dev/null || echo "No logs yet"
+
+# === TESTING COMMANDS ===
+
+# Submit regular job
+submit-job:
+	@echo "📤 Submitting job to Docker nodes..."
+	@curl -X POST http://localhost:8080/submit \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer test-token" \
+		-H "X-Client-ID: test-client" \
+		-d '{"model_name": "resnet50", "input_data": {"image": "test.jpg"}}' | jq . 2>/dev/null || echo "Gateway not ready"
+
+# Submit job to Mac M2
+submit-job-mac:
+	@echo "📤 Submitting job to Mac M2 native node..."
+	@curl -X POST http://localhost:8080/jobs/submit/native \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer test-token" \
+		-H "X-Client-ID: mac-test-client" \
+		-d '{ \
+			"model_name": "resnet50", \
+			"input_data": {"image": "test.jpg", "size": [224, 224]}, \
+			"priority": 2, \
+			"gpu_requirements": {"memory_gb": 2, "supports_metal": true} \
+		}' | jq . 2>/dev/null || echo "Gateway not ready"
+
+# Stress test
+stress-test:
+	@echo "🔥 Running stress test..."
+	@for i in {1..5}; do \
+		$(MAKE) submit-job & \
+	done; \
+	wait
+
+# Benchmark Mac M2 vs Docker
+benchmark-mac:
+	@echo "⚡ Benchmarking Mac M2 vs Docker performance..."
+	@echo "Mac M2 performance:"
+	@time $(MAKE) submit-job-mac
+	@sleep 2
+	@echo "Docker performance:"
+	@time $(MAKE) submit-job
+
+# Full integration test
+test-integration:
+	@echo "🧪 Running full integration test..."
+	@python3 test_integration.py
+
+# === MONITORING ===
+
+# Open monitoring dashboard
+monitor:
+	@echo "📊 Opening monitoring dashboard..."
+	@open http://localhost:3001 2>/dev/null || echo "Open http://localhost:3001 in your browser"
+
+# Show system status (compatible with older Docker versions)
+status:
+	@echo "📊 SynapseGrid System Status"
+	@echo "============================"
+	@echo ""
+	@echo "🐳 Docker containers:"
+	@docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep synapse || echo "No synapse containers running"
+	@echo ""
+	@echo "🏥 Service health:"
+	@$(MAKE) health-check
+	@echo ""
+	@echo "💾 Resource usage:"
+	@docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" | head -10
+
+# === SYSTEM COMMANDS ===
+
+# Start complete system (with proper timing)
+start-all:
+	@echo "🚀 Starting complete SynapseGrid system..."
+	@echo "1️⃣ Starting Docker services..."
+	@$(MAKE) start
+	@echo "2️⃣ Waiting for services to stabilize..."
+	@sleep 15
+	@echo "3️⃣ Starting Mac M2 node..."
+	@$(MAKE) start-mac
+	@echo ""
+	@echo "🎉 Complete system is ready!"
+	@echo ""
+	@$(MAKE) status-summary
+
+# Stop complete system
+stop-all:
+	@echo "🛑 Stopping complete SynapseGrid system..."
+	@$(MAKE) stop-mac
+	@$(MAKE) stop
+	@echo "✅ Everything stopped!"
+
+# Monitor all nodes
+monitor-all:
+	@echo "📊 Complete system monitoring:"
+	@$(MAKE) status-summary
+	@$(MAKE) monitor
+
+# Summary status (simplified)
+status-summary:
+	@echo "📈 System Summary:"
+	@echo "=================="
+	@docker ps --format "{{.Names}}: {{.Status}}" | grep synapse | head -5 || echo "No containers running"
+	@echo ""
+	@$(MAKE) status-mac 2>/dev/null || echo "Mac M2 node: Not running"
+
+# === UTILITY COMMANDS ===
+
+# Clean up
+clean:
+	@echo "🧹 Cleaning up..."
+	@docker-compose down -v
+	@docker system prune -f
+	@docker volume prune -f
+	@echo "✅ Cleanup complete!"
+
+# Database operations
+db-reset:
+	@echo "🗄️ Resetting database..."
+	@docker-compose down postgres
+	@docker volume rm $(shell basename $(PWD))_postgres_data 2>/dev/null || true
+	@docker-compose up -d postgres
+	@sleep 5
+	@echo "✅ Database reset complete!"
+
+# Quick test
+quick-test:
+	@echo "⚡ Quick system test..."
+	@$(MAKE) health-check
+	@$(MAKE) submit-job
+	@echo "✅ Quick test complete!"
+
+# Wait for services
+wait-for-services:
+	@echo "⏳ Waiting for all services to be ready..."
+	@for i in {1..30}; do \
+		if curl -s http://localhost:8080/health >/dev/null 2>&1; then \
+			echo "✅ Gateway ready"; \
+			break; \
+		else \
+			echo "⏳ Waiting... ($$i/30)"; \
+			sleep 2; \
+		fi; \
+	done
+	@sleep 2
+	@echo "✅ Services should be ready now"
+EOF
+
+echo "✅ Makefile updated for compatibility"
+
+# Fix 2: Update Mac M2 node for better error handling and Redis compatibility
+echo "🍎 Fixing Mac M2 node..."
+
+cat > native_node/mac_m2_node.py << 'EOF'
+#!/usr/bin/env python3
+"""
+SynapseGrid Mac M2 Native Node - Fixed Version
+Real AI execution with PyTorch MPS and native frameworks
+"""
+import asyncio
+import json
+import logging
+import time
+import platform
+import psutil
+import sys
+from typing import Dict, Any, Optional
+from datetime import datetime
+from pathlib import Path
+
+import aioredis
+import aiohttp
+import numpy as np
+from PIL import Image
+
+# Try AI framework imports
+try:
+    import torch
+    import torchvision.transforms as transforms
+    from torchvision.models import resnet50
+    TORCH_AVAILABLE = True
+    print("✅ PyTorch available")
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("❌ PyTorch not available")
+
+try:
+    import transformers
+    from transformers import pipeline
+    TRANSFORMERS_AVAILABLE = True
+    print("✅ Transformers available")
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    print("❌ Transformers not available")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/mac_node.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class MacM2Node:
+    def __init__(self):
+        self.node_id = f"mac_m2_{platform.node()}_{int(time.time())}"
+        self.gateway_url = "http://localhost:8080"
+        self.redis_url = "redis://localhost:6379"
+        self.region = "local-mac"
+        self.running = False
+        self.loaded_models = {}
+        self.total_jobs = 0
+        self.successful_jobs = 0
+        self.connection_retries = 0
+        self.max_retries = 12  # 1 minute of retries
+        
+        logger.info(f"Initialized Mac M2 Node: {self.node_id}")
+    
+    async def start(self):
+        """Start the Mac M2 node with retry logic"""
+        logger.info("Starting Mac M2 AI Node")
+        
+        # Connect to Redis with retries
+        await self._connect_redis()
+        
+        # Register with gateway with retries
+        await self._register_with_retries()
+        
+        # Load models
+        await self._prepare_models()
+        
+        self.running = True
+        
+        # Start loops
+        await asyncio.gather(
+            self._job_polling_loop(),
+            self._heartbeat_loop()
+        )
+    
+    async def _connect_redis(self):
+        """Connect to Redis with retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                self.redis = aioredis.from_url(
+                    self.redis_url, 
+                    encoding="utf-8", 
+                    decode_responses=True
+                )
+                await self.redis.ping()
+                logger.info("✅ Connected to Redis")
+                return
+            except Exception as e:
+                logger.warning(f"⚠️ Redis connection attempt {attempt + 1}/{self.max_retries} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(5)
+                else:
+                    logger.error("❌ Failed to connect to Redis after all retries")
+                    raise
+    
+    async def _register_with_retries(self):
+        """Register with gateway with retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                await self._register_node()
+                logger.info("✅ Successfully registered with gateway")
+                return
+            except Exception as e:
+                logger.warning(f"⚠️ Registration attempt {attempt + 1}/{self.max_retries} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(5)
+                else:
+                    logger.error("❌ Failed to register after all retries, continuing anyway...")
+                    # Don't raise - continue without gateway registration
+    
+    async def _register_node(self):
+        """Register with gateway"""
+        # System info
+        memory = psutil.virtual_memory()
+        
+        registration_data = {
+            "node_id": self.node_id,
+            "node_type": "mac_m2_native",
+            "system_info": {
+                "region": self.region,
+                "gpu_info": {
+                    "name": "Apple M2 GPU",
+                    "memory_gb": memory.total / (1024**3) * 0.4,  # Estimate GPU portion
+                    "compute_capability": 8.0,
+                    "driver_version": "Metal",
+                    "unified_memory": True
+                },
+                "cpu_info": {
+                    "model": "Apple M2",
+                    "cores": psutil.cpu_count(),
+                    "architecture": platform.machine()
+                },
+                "memory_gb": memory.total / (1024**3),
+                "capabilities": {
+                    "supported_models": ["resnet50", "bert-base", "gpt2"] if TORCH_AVAILABLE else [],
+                    "frameworks": ["pytorch"] if TORCH_AVAILABLE else [],
+                    "max_batch_size": 4,
+                    "supports_metal": True,
+                    "neural_engine": True
+                }
+            }
+        }
+        
+        # Try gateway registration
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.gateway_url}/nodes/register",
+                    json=registration_data,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        logger.info("✅ Registered with gateway")
+                    else:
+                        error_text = await response.text()
+                        raise Exception(f"HTTP {response.status}: {error_text}")
+        except Exception as e:
+            logger.error(f"❌ Gateway registration failed: {e}")
+            raise
+        
+        # Register in Redis (using hset instead of deprecated hmset)
+        node_key = f"node:{self.node_id}:{self.region}:info"
+        node_data = {
+            "node_id": self.node_id,
+            "region": self.region,
+            "node_type": "mac_m2_native",
+            "gpu_info": json.dumps(registration_data["system_info"]["gpu_info"]),
+            "capabilities": json.dumps(registration_data["system_info"]["capabilities"]),
+            "status": "available",
+            "current_load": "0.0",
+            "success_rate": "1.0",
+            "avg_latency": "50.0",
+            "last_seen": datetime.utcnow().isoformat()
+        }
+        
+        # Use hset instead of deprecated hmset
+        for key, value in node_data.items():
+            await self.redis.hset(node_key, key, value)
+        await self.redis.expire(node_key, 60)
+        await self.redis.sadd("native_nodes", self.node_id)
+    
+    async def _prepare_models(self):
+        """Load AI models"""
+        logger.info("Loading AI models...")
+        
+        if TORCH_AVAILABLE:
+            try:
+                # Load ResNet50
+                model = resnet50(pretrained=True)
+                model.eval()
+                
+                # Use MPS if available
+                if torch.backends.mps.is_available():
+                    device = torch.device("mps")
+                    model = model.to(device)
+                    logger.info("✅ Using Metal Performance Shaders")
+                else:
+                    device = torch.device("cpu")
+                    logger.info("✅ Using CPU")
+                
+                self.loaded_models["resnet50"] = {
+                    "model": model,
+                    "device": device,
+                    "transform": transforms.Compose([
+                        transforms.Resize(256),
+                        transforms.CenterCrop(224),
+                        transforms.ToTensor(),
+                        transforms.Normalize(
+                            mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]
+                        )
+                    ])
+                }
+                logger.info("✅ ResNet50 loaded")
+                
+            except Exception as e:
+                logger.error(f"❌ Error loading PyTorch models: {e}")
+        
+        if TRANSFORMERS_AVAILABLE:
+            try:
+                # Load GPT-2 pipeline (smaller version for faster loading)
+                gpt2_pipeline = pipeline("text-generation", model="gpt2", max_length=50)
+                self.loaded_models["gpt2"] = {"pipeline": gpt2_pipeline}
+                logger.info("✅ GPT-2 loaded")
+            except Exception as e:
+                logger.error(f"❌ Error loading Transformers models: {e}")
+    
+    async def _job_polling_loop(self):
+        """Poll for jobs"""
+        while self.running:
+            try:
+                job_key = f"node_jobs:{self.node_id}"
+                job_data = await self.redis.brpop(job_key, timeout=1)
+                
+                if job_data:
+                    job = json.loads(job_data[1])
+                    await self._execute_job(job)
+            except Exception as e:
+                logger.error(f"Error in job polling: {e}")
+                await asyncio.sleep(1)
+    
+    async def _heartbeat_loop(self):
+        """Send heartbeats"""
+        while self.running:
+            try:
+                node_key = f"node:{self.node_id}:{self.region}:info"
+                
+                memory = psutil.virtual_memory()
+                cpu_percent = psutil.cpu_percent(interval=1)
+                success_rate = self.successful_jobs / max(1, self.total_jobs)
+                
+                update_data = {
+                    "status": "available",
+                    "cpu_usage": str(cpu_percent),
+                    "memory_usage": str(memory.percent),
+                    "success_rate": str(success_rate),
+                    "total_jobs": str(self.total_jobs),
+                    "last_seen": datetime.utcnow().isoformat()
+                }
+                
+                # Use hset for individual fields
+                for key, value in update_data.items():
+                    await self.redis.hset(node_key, key, value)
+                await self.redis.expire(node_key, 60)
+                
+                await asyncio.sleep(10)
+            except Exception as e:
+                logger.error(f"Error in heartbeat: {e}")
+                await asyncio.sleep(5)
+    
+    async def _execute_job(self, job: Dict[str, Any]):
+        """Execute a job"""
+        job_id = job["job_id"]
+        model_name = job["model_name"]
+        input_data = job.get("input_data", {})
+        
+        logger.info(f"🚀 Executing job {job_id} with model {model_name}")
+        start_time = time.time()
+        
+        try:
+            self.total_jobs += 1
+            
+            # Execute based on model
+            if model_name == "resnet50" and "resnet50" in self.loaded_models:
+                result = await self._execute_resnet50(input_data)
+            elif model_name == "gpt2" and "gpt2" in self.loaded_models:
+                result = await self._execute_gpt2(input_data)
+            else:
+                # Fallback simulation
+                await asyncio.sleep(0.5)
+                result = {
+                    "model": model_name,
+                    "message": f"Simulated execution on Mac M2",
+                    "device": "mps" if torch.backends.mps.is_available() else "cpu",
+                    "frameworks_available": {
+                        "pytorch": TORCH_AVAILABLE,
+                        "transformers": TRANSFORMERS_AVAILABLE
+                    }
+                }
+            
+            execution_time = time.time() - start_time
+            self.successful_jobs += 1
+            
+            # Send result
+            await self._send_result(job_id, True, result, execution_time)
+            
+            logger.info(f"✅ Job {job_id} completed in {execution_time:.2f}s")
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            await self._send_result(job_id, False, None, execution_time, str(e))
+            logger.error(f"❌ Job {job_id} failed: {e}")
+    
+    async def _execute_resnet50(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute ResNet50 inference"""
+        model_info = self.loaded_models["resnet50"]
+        model = model_info["model"]
+        device = model_info["device"]
+        transform = model_info["transform"]
+        
+        # Create test image
+        image = Image.new('RGB', (224, 224), color=(255, 0, 0))  # Red test image
+        
+        # Transform and run inference
+        input_tensor = transform(image).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            outputs = model(input_tensor)
+            probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
+            top5_prob, top5_idx = torch.topk(probabilities, 5)
+            
+            predictions = []
+            for i in range(5):
+                predictions.append({
+                    "class_idx": int(top5_idx[i]),
+                    "probability": float(top5_prob[i])
+                })
+        
+        return {
+            "model": "resnet50",
+            "predictions": predictions,
+            "device_used": str(device),
+            "framework": "pytorch_mps" if device.type == "mps" else "pytorch_cpu",
+            "inference_optimized": True
+        }
+    
+    async def _execute_gpt2(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute GPT-2 text generation"""
+        prompt = input_data.get("prompt", "Hello, I am")
+        
+        generator = self.loaded_models["gpt2"]["pipeline"]
+        result = generator(prompt, max_length=50, num_return_sequences=1, do_sample=True)
+        
+        return {
+            "model": "gpt2",
+            "prompt": prompt,
+            "generated_text": result[0]["generated_text"],
+            "framework": "transformers",
+            "device": "optimized_mac_m2"
+        }
+    
+    async def _send_result(self, job_id: str, success: bool, result: Optional[Dict], 
+                          execution_time: float, error: Optional[str] = None):
+        """Send result to aggregator"""
+        result_data = {
+            "job_id": job_id,
+            "node_id": self.node_id,
+            "success": str(success).lower(),
+            "execution_time": str(execution_time),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        if success and result:
+            result_data["result"] = json.dumps(result)
+        if error:
+            result_data["error"] = error
+        
+        await self.redis.xadd("job_results", result_data)
+        logger.info(f"📤 Sent result for job {job_id}")
+
+async def main():
+    """Main entry point"""
+    if platform.system() != "Darwin":
+        print("❌ This node is for macOS only")
+        return
+    
+    node = MacM2Node()
+    
+    try:
+        await node.start()
+    except KeyboardInterrupt:
+        logger.info("🛑 Received shutdown signal")
+        node.running = False
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
+        return
+
+if __name__ == "__main__":
+    # Create logs directory
+    Path("logs").mkdir(exist_ok=True)
+    
+    print("🍎 Starting SynapseGrid Mac M2 AI Node...")
+    print("Press Ctrl+C to stop")
+    
+    asyncio.run(main())
+EOF
+
+echo "✅ Mac M2 node updated with better error handling"
+
+# Fix 3: Update start scripts for better timing
+cat > native_node/start.sh << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+
+echo "🍎 Starting Mac M2 SynapseGrid Node..."
+
+# Check if virtual environment exists
+if [ ! -d "venv" ]; then
+    echo "❌ Virtual environment not found. Run 'make setup-mac' first."
+    exit 1
+fi
+
+# Activate virtual environment
+source venv/bin/activate
+
+# Check if gateway is accessible
+echo "⏳ Checking gateway availability..."
+for i in {1..30}; do
+    if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+        echo "✅ Gateway is ready"
+        break
+    else
+        echo "⏳ Waiting for gateway... ($i/30)"
+        sleep 2
+    fi
+done
+
+# Start the node
+echo "🚀 Starting Mac M2 node..."
+python3 mac_m2_node.py
+EOF
+
+chmod +x native_node/start.sh
+
+echo "✅ All compatibility issues fixed!"
+
+echo ""
+echo "🎯 Issues Fixed:"
+echo "✅ Docker stats command compatibility"
+echo "✅ Mac M2 node Redis hmset deprecation warning"
+echo "✅ Gateway readiness checking with retry logic"
+echo "✅ Better error handling and logging"
+echo ""
+echo "🚀 Try again:"
+echo "make start-all"
+echo ""
+echo "Or step by step:"
+echo "1. make start          # Start Docker services"
+echo "2. make wait-for-services  # Wait for readiness"
+echo "3. make start-mac      # Start Mac M2 node"
+

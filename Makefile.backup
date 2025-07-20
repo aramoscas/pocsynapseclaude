@@ -1,0 +1,264 @@
+# Makefile for SynapseGrid POC - Enhanced Version
+
+.PHONY: help setup start stop restart logs test clean proto build-images
+
+# Default target
+help:
+	@echo "SynapseGrid POC - Enhanced Commands:"
+	@echo ""
+	@echo "🚀 CORE COMMANDS:"
+	@echo "  setup          - Setup development environment"
+	@echo "  build-images   - Build all Docker images"
+	@echo "  start          - Start all Docker services"
+	@echo "  stop           - Stop all services"
+	@echo "  restart        - Restart all services"
+	@echo "  logs           - View logs from all services"
+	@echo "  test           - Run API tests"
+	@echo "  clean          - Clean up containers and volumes"
+	@echo ""
+	@echo "🍎 MAC M2 COMMANDS:"
+	@echo "  setup-mac      - Setup Mac M2 native node"
+	@echo "  start-mac      - Start Mac M2 native node"
+	@echo "  stop-mac       - Stop Mac M2 node"
+	@echo "  status-mac     - Check Mac M2 node status"
+	@echo "  test-mac       - Test Mac M2 AI capabilities"
+	@echo "  logs-mac       - View Mac M2 node logs"
+	@echo ""
+	@echo "🧪 TESTING COMMANDS:"
+	@echo "  submit-job     - Submit test job to Docker nodes"
+	@echo "  submit-job-mac - Submit job to Mac M2 node"
+	@echo "  stress-test    - Run stress test"
+	@echo "  benchmark-mac  - Benchmark Mac M2 vs Docker"
+	@echo "  test-integration - Full integration test"
+	@echo ""
+	@echo "📊 MONITORING:"
+	@echo "  monitor        - Open monitoring dashboard"
+	@echo "  status         - Show system status"
+	@echo "  health-check   - Check service health"
+	@echo ""
+	@echo "🔧 SYSTEM COMMANDS:"
+	@echo "  start-all      - Start Docker + Mac M2"
+	@echo "  stop-all       - Stop everything"
+	@echo "  monitor-all    - Monitor all nodes"
+
+# Setup development environment
+setup:
+	@echo "Setting up SynapseGrid enhanced environment..."
+	@docker network create synapse_network 2>/dev/null || true
+	@pip install -r requirements.txt 2>/dev/null || echo "Install requirements manually if needed"
+	@echo "✅ Setup complete!"
+
+# Build Docker images
+build-images:
+	@echo "Building Docker images..."
+	@docker-compose build
+	@echo "✅ Images built successfully!"
+
+# Start all Docker services
+start:
+	@echo "Starting SynapseGrid Docker services..."
+	@docker-compose up -d
+	@echo "✅ Docker services started!"
+	@echo ""
+	@echo "🔗 Access points:"
+	@echo "  Gateway API:    http://localhost:8080"
+	@echo "  Grafana:        http://localhost:3001 (admin/admin123)"
+	@echo "  Prometheus:     http://localhost:9090"
+	@echo ""
+	@sleep 10
+	@$(MAKE) health-check
+
+# Stop all services
+stop:
+	@echo "Stopping SynapseGrid Docker services..."
+	@docker-compose down
+	@echo "✅ Docker services stopped!"
+
+# Restart services
+restart: stop start
+
+# View logs
+logs:
+	@docker-compose logs -f
+
+# Health check
+health-check:
+	@echo "🏥 Checking service health..."
+	@curl -s http://localhost:8080/health | jq . || echo "⚠️ Gateway not ready"
+	@curl -s http://localhost:9090/-/healthy >/dev/null && echo "✅ Prometheus healthy" || echo "⚠️ Prometheus not ready"
+
+# === MAC M2 NATIVE NODE COMMANDS ===
+
+# Setup Mac M2 node
+setup-mac:
+	@echo "🍎 Setting up Mac M2 native node..."
+	@chmod +x setup_mac_node.sh
+	@./setup_mac_node.sh
+
+# Start Mac M2 node
+start-mac:
+	@echo "🍎 Starting Mac M2 native node..."
+	@cd native_node && ./start.sh &
+	@sleep 5
+	@$(MAKE) status-mac
+
+# Stop Mac M2 node
+stop-mac:
+	@echo "🍎 Stopping Mac M2 node..."
+	@cd native_node && ./stop.sh || true
+
+# Check Mac M2 node status
+status-mac:
+	@echo "🍎 Mac M2 Node Status:"
+	@cd native_node && ./status.sh
+
+# Test Mac M2 capabilities
+test-mac:
+	@echo "🧪 Testing Mac M2 AI capabilities..."
+	@cd native_node && source venv/bin/activate && python test_models.py
+
+# View Mac M2 logs
+logs-mac:
+	@echo "📋 Mac M2 Node Logs (last 50 lines):"
+	@tail -50 native_node/logs/mac_node.log 2>/dev/null || echo "No logs yet"
+
+# === TESTING COMMANDS ===
+
+# Submit regular job
+submit-job:
+	@echo "📤 Submitting job to Docker nodes..."
+	@curl -X POST http://localhost:8080/submit \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer test-token" \
+		-H "X-Client-ID: test-client" \
+		-d '{"model_name": "resnet50", "input_data": {"image": "test.jpg"}}' | jq .
+
+# Submit job to Mac M2
+submit-job-mac:
+	@echo "📤 Submitting job to Mac M2 native node..."
+	@curl -X POST http://localhost:8080/jobs/submit/native \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer test-token" \
+		-H "X-Client-ID: mac-test-client" \
+		-d '{ \
+			"model_name": "resnet50", \
+			"input_data": {"image": "test.jpg", "size": [224, 224]}, \
+			"priority": 2, \
+			"gpu_requirements": {"memory_gb": 2, "supports_metal": true} \
+		}' | jq .
+
+# Stress test
+stress-test:
+	@echo "🔥 Running stress test..."
+	@for i in {1..5}; do \
+		$(MAKE) submit-job & \
+	done; \
+	wait
+
+# Benchmark Mac M2 vs Docker
+benchmark-mac:
+	@echo "⚡ Benchmarking Mac M2 vs Docker performance..."
+	@echo "Mac M2 performance:"
+	@time $(MAKE) submit-job-mac
+	@sleep 2
+	@echo "Docker performance:"
+	@time $(MAKE) submit-job
+
+# Full integration test
+test-integration:
+	@echo "🧪 Running full integration test..."
+	@python3 test_integration.py
+
+# === MONITORING ===
+
+# Open monitoring dashboard
+monitor:
+	@echo "📊 Opening monitoring dashboard..."
+	@open http://localhost:3001 2>/dev/null || xdg-open http://localhost:3001 2>/dev/null || echo "Open http://localhost:3001 manually"
+
+# Show system status
+status:
+	@echo "📊 SynapseGrid System Status"
+	@echo "============================"
+	@echo ""
+	@echo "🐳 Docker containers:"
+	@docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" --filter "name=synapse"
+	@echo ""
+	@echo "🏥 Service health:"
+	@$(MAKE) health-check
+	@echo ""
+	@echo "💾 Resource usage:"
+	@docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" --filter "name=synapse"
+
+# === SYSTEM COMMANDS ===
+
+# Start complete system
+start-all:
+	@echo "🚀 Starting complete SynapseGrid system..."
+	@$(MAKE) start
+	@sleep 15
+	@echo "🍎 Starting Mac M2 node..."
+	@$(MAKE) start-mac
+	@echo ""
+	@echo "🎉 Complete system is ready!"
+	@$(MAKE) status
+	@$(MAKE) status-mac
+
+# Stop complete system
+stop-all:
+	@echo "🛑 Stopping complete SynapseGrid system..."
+	@$(MAKE) stop-mac
+	@$(MAKE) stop
+	@echo "✅ Everything stopped!"
+
+# Monitor all nodes
+monitor-all:
+	@echo "📊 Complete system monitoring:"
+	@$(MAKE) status
+	@$(MAKE) status-mac
+	@$(MAKE) monitor
+
+# === UTILITY COMMANDS ===
+
+# Clean up
+clean:
+	@echo "🧹 Cleaning up..."
+	@docker-compose down -v
+	@docker system prune -f
+	@docker volume prune -f
+	@echo "✅ Cleanup complete!"
+
+# Generate protobuf files
+proto:
+	@echo "🔧 Generating protobuf files..."
+	@mkdir -p shared/proto
+	@echo "⚠️ Protobuf generation requires proto files - implement as needed"
+
+# Database operations
+db-reset:
+	@echo "🗄️ Resetting database..."
+	@docker-compose down postgres
+	@docker volume rm pocsynapseclaude_postgres_data 2>/dev/null || true
+	@docker-compose up -d postgres
+	@sleep 5
+	@echo "✅ Database reset complete!"
+
+# Export logs
+export-logs:
+	@echo "📋 Exporting logs..."
+	@mkdir -p logs_export_$(shell date +%Y%m%d_%H%M%S)
+	@docker-compose logs > logs_export_$(shell date +%Y%m%d_%H%M%S)/docker_logs.txt
+	@cp native_node/logs/* logs_export_$(shell date +%Y%m%d_%H%M%S)/ 2>/dev/null || true
+	@echo "✅ Logs exported!"
+
+# Development mode
+dev:
+	@echo "🔧 Starting in development mode..."
+	@docker-compose up
+
+# Quick test
+quick-test:
+	@echo "⚡ Quick system test..."
+	@$(MAKE) health-check
+	@$(MAKE) submit-job
+	@echo "✅ Quick test complete!"

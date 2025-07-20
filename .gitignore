@@ -7,19 +7,10 @@ __pycache__/
 env/
 venv/
 .venv/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Logs
-logs/
-*.log
-
-# Database
-*.db
-*.sqlite
-
-# Docker
-.docker/
-
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
@@ -29,10 +20,28 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Protobuf generated
-*_pb2.py
-*_pb2_grpc.py
+# Docker
+.dockerignore
 
-# Temporary files
-/tmp/
+# Logs
+*.log
+logs/
+native_node/logs/
+
+# Data
+data/
+backup_*/
+logs_export_*/
+
+# Models
+native_node/models/*.pt
+native_node/models/*.onnx
+native_node/cache/
+
+# Environment
+.env
+.env.local
+
+# Temporary
 *.tmp
+*.temp
