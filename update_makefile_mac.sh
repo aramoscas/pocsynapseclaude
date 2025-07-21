@@ -1,3 +1,15 @@
+#!/bin/bash
+
+# 🍎 Script pour ajouter les commandes Mac M2 au Makefile
+
+echo "🔧 Mise à jour du Makefile pour Mac M2 natif"
+echo "==========================================="
+
+# Sauvegarder le Makefile actuel
+cp Makefile Makefile.backup.mac
+
+# Créer le Makefile avec support Mac M2
+cat > Makefile << 'MAKEFILE_EOF'
 # SynapseGrid Makefile - avec support Mac M2 natif
 .PHONY: help setup proto start stop logs test clean submit-job dashboard dashboard-start dashboard-stop mac-start mac-stop mac-status mac-restart
 
@@ -290,3 +302,15 @@ proto: ## Generate protobuf files (legacy)
 fix: ## Run ultimate fix
 	@./ultimate_fix.sh
 
+MAKEFILE_EOF
+
+echo "✅ Makefile mis à jour avec support Mac M2 natif !"
+echo ""
+echo "🍎 Nouvelles commandes Mac M2 :"
+echo "  make mac-start    # Démarrer le nœud Mac M2"
+echo "  make mac-stop     # Arrêter le nœud Mac M2"  
+echo "  make mac-status   # Status du nœud Mac M2"
+echo "  make mac-restart  # Redémarrer le nœud Mac M2"
+echo "  make mac-logs     # Logs du nœud Mac M2"
+echo ""
+echo "🚀 La commande 'make start' inclut maintenant le Mac M2 !"
