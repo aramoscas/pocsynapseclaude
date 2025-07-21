@@ -31,6 +31,9 @@ import {
   Shield
 } from 'lucide-react';
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { useRealData } from './hooks/useRealData';
+import { API_ENDPOINTS } from './config';
+
 
 // Composant Dashboard Principal
 const SynapseGridDashboard = () => {

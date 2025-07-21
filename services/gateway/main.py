@@ -208,3 +208,121 @@ async def websocket_endpoint(websocket):
 if __name__ == "__main__":
     port = int(os.getenv("HTTP_PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
+@app.get("/api/stats")
+async def get_stats():
+    """Get system statistics"""
+    try:
+        # Get node count
+        node_keys = await redis_client.keys("node:*")
+        active_nodes = 0
+        for key in node_keys:
+            node_data = await redis_client.hgetall(key)
+            if node_data.get('status') == 'online':
+                active_nodes += 1
+        
+        # Get job statistics
+        pending_jobs = await redis_client.zcard("jobs:queue:us-east")
+        
+        # Get completed jobs count
+        completed_jobs = 0
+        job_keys = await redis_client.keys("job:*")
+        for key in job_keys:
+            job_data = await redis_client.hgetall(key)
+            if job_data.get('status') == 'completed':
+                completed_jobs += 1
+        
+        return {
+            "totalNodes": active_nodes,
+            "activeJobs": pending_jobs,
+            "completedJobs": completed_jobs,
+            "avgLatency": 250,  # TODO: Calculate from real data
+            "throughput": 1500,  # TODO: Calculate from real data
+        }
+    except Exception as e:
+        logger.error("Failed to get stats", error=str(e))
+        return {"totalNodes": 0, "activeJobs": 0, "completedJobs": 0}
+
+@app.get("/api/nodes")
+async def get_nodes():
+    """Get list of active nodes"""
+    try:
+        node_keys = await redis_client.keys("node:*")
+        nodes = []
+        for key in node_keys:
+            node_data = await redis_client.hgetall(key)
+            if node_data:
+                nodes.append(node_data)
+        return nodes
+    except Exception as e:
+        logger.error("Failed to get nodes", error=str(e))
+        return []
+
+@app.get("/api/jobs/queue")
+async def get_job_queue():
+    """Get jobs in queue"""
+    try:
+        jobs = await redis_client.zrange("jobs:queue:us-east", 0, -1)
+        return {"queue": jobs, "count": len(jobs)}
+    except Exception as e:
+        logger.error("Failed to get job queue", error=str(e))
+        return {"queue": [], "count": 0}
+
+@app.get("/api/stats")
+async def get_stats():
+    """Get system statistics"""
+    try:
+        # Get node count
+        node_keys = await redis_client.keys("node:*")
+        active_nodes = 0
+        for key in node_keys:
+            node_data = await redis_client.hgetall(key)
+            if node_data.get('status') == 'online':
+                active_nodes += 1
+        
+        # Get job statistics
+        pending_jobs = await redis_client.zcard("jobs:queue:us-east")
+        
+        # Get completed jobs count
+        completed_jobs = 0
+        job_keys = await redis_client.keys("job:*")
+        for key in job_keys:
+            job_data = await redis_client.hgetall(key)
+            if job_data.get('status') == 'completed':
+                completed_jobs += 1
+        
+        return {
+            "totalNodes": active_nodes,
+            "activeJobs": pending_jobs,
+            "completedJobs": completed_jobs,
+            "avgLatency": 250,  # TODO: Calculate from real data
+            "throughput": 1500,  # TODO: Calculate from real data
+        }
+    except Exception as e:
+        logger.error("Failed to get stats", error=str(e))
+        return {"totalNodes": 0, "activeJobs": 0, "completedJobs": 0}
+
+@app.get("/api/nodes")
+async def get_nodes():
+    """Get list of active nodes"""
+    try:
+        node_keys = await redis_client.keys("node:*")
+        nodes = []
+        for key in node_keys:
+            node_data = await redis_client.hgetall(key)
+            if node_data:
+                nodes.append(node_data)
+        return nodes
+    except Exception as e:
+        logger.error("Failed to get nodes", error=str(e))
+        return []
+
+@app.get("/api/jobs/queue")
+async def get_job_queue():
+    """Get jobs in queue"""
+    try:
+        jobs = await redis_client.zrange("jobs:queue:us-east", 0, -1)
+        return {"queue": jobs, "count": len(jobs)}
+    except Exception as e:
+        logger.error("Failed to get job queue", error=str(e))
+        return {"queue": [], "count": 0}
