@@ -1,26 +1,39 @@
-# services/gateway/main.py - Version corrigée avec tous les endpoints
+#!/usr/bin/env python3
+"""Gateway Service - Entry point for job submissions"""
+
+import os
+import sys
 import asyncio
 import json
-import logging
 import time
-import hashlib
-import uuid
-from typing import Dict, Any, Optional
 from datetime import datetime
+from typing import Dict, Any, Optional
 
-import aioredis
-import asyncpg
-from fastapi import FastAPI, HTTPException, Depends, Header, Response
+import redis.asyncio as redis
+import uvicorn
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import uvicorn
+import structlog
+from prometheus_client import Counter, Histogram, generate_latest
+from fastapi.responses import Response
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Add shared module to path
+# Path already set by PYTHONPATH env variable
+from shared.utils import get_redis_client, get_postgres_engine
+from shared.models import Job, JobStatus
 
-app = FastAPI(title="SynapseGrid Gateway", version="2.0.0")
+# Configure structured logging
+logger = structlog.get_logger()
 
+# Metrics
+job_counter = Counter('gateway_jobs_received', 'Total jobs received')
+job_latency = Histogram('gateway_job_processing_seconds', 'Job processing latency')
+auth_failures = Counter('gateway_auth_failures', 'Authentication failures')
+
+app = FastAPI(title="SynapseGrid Gateway", version="0.1.0")
+
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,664 +42,169 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class SubmitJobRequest(BaseModel):
+# Redis client
+redis_client = None
+
+class JobSubmission(BaseModel):
     model_name: str
     input_data: Dict[str, Any]
     priority: int = 1
-    timeout: int = 300
-    gpu_requirements: Optional[Dict[str, Any]] = None
+    client_id: Optional[str] = None
 
-# Utility functions
-def generate_job_id() -> str:
-    return f"job_{uuid.uuid4().hex[:12]}"
-
-def verify_token(token: str) -> bool:
-    return token == "test-token"
-
-# Global state
-redis_client = None
-postgres_pool = None
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
+    submitted_at: str
+    estimated_completion: Optional[str] = None
 
 @app.on_event("startup")
-async def startup():
-    global redis_client, postgres_pool
-    
-    try:
-        # Initialize Redis
-        redis_client = aioredis.from_url(
-            "redis://redis:6379",
-            encoding="utf-8",
-            decode_responses=True
-        )
-        await redis_client.ping()
-        logger.info("✅ Connected to Redis")
-        
-        # Initialize PostgreSQL
-        postgres_pool = await asyncpg.create_pool(
-            "postgresql://synapse:synapse123@postgres:5432/synapse",
-            min_size=2,
-            max_size=10
-        )
-        logger.info("✅ Connected to PostgreSQL")
-        
-    except Exception as e:
-        logger.error(f"❌ Startup failed: {e}")
-        raise
-    
-    logger.info("🚀 Gateway started successfully")
+async def startup_event():
+    """Initialize connections on startup"""
+    global redis_client
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    redis_client = await redis.from_url(redis_url, decode_responses=True)
+    logger.info("Gateway started", redis_url=redis_url)
 
 @app.on_event("shutdown")
-async def shutdown():
+async def shutdown_event():
+    """Clean up connections"""
     if redis_client:
         await redis_client.close()
-    if postgres_pool:
-        await postgres_pool.close()
+    logger.info("Gateway shutdown")
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     try:
-        # Test Redis connection
         await redis_client.ping()
-        redis_status = "healthy"
-    except:
-        redis_status = "unhealthy"
-    
-    try:
-        # Test PostgreSQL connection
-        async with postgres_pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        postgres_status = "healthy"
-    except:
-        postgres_status = "unhealthy"
-    
-    return {
-        "status": "healthy" if redis_status == "healthy" and postgres_status == "healthy" else "degraded",
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "redis": redis_status,
-            "postgres": postgres_status
-        }
-    }
-
-@app.post("/submit")
-async def submit_job(
-    request: SubmitJobRequest,
-    authorization: str = Header(...),
-    x_client_id: str = Header(..., alias="X-Client-ID")
-):
-    """Submit a job for processing"""
-    # Validate token
-    token = authorization.replace("Bearer ", "")
-    if not verify_token(token):
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    try:
-        job_id = generate_job_id()
-        
-        # Store job in database
-        async with postgres_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO jobs (job_id, client_id, model_name, input_data, status, created_at, priority)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """, job_id, x_client_id, request.model_name, json.dumps(request.input_data), "queued", 
-            datetime.utcnow(), request.priority)
-        
-        # Add to Redis queue
-        await redis_client.lpush("jobs:queue", json.dumps({
-            "job_id": job_id,
-            "client_id": x_client_id,
-            "model_name": request.model_name,
-            "input_data": request.input_data,
-            "priority": request.priority,
-            "timeout": request.timeout,
-            "gpu_requirements": request.gpu_requirements
-        }))
-        
-        logger.info(f"📤 Job {job_id} submitted by {x_client_id}")
-        
-        return {
-            "job_id": job_id,
-            "status": "queued",
-            "estimated_cost": 0.01,
-            "message": "Job submitted successfully"
-        }
-        
+        return {"status": "healthy", "service": "gateway"}
     except Exception as e:
-        logger.error(f"❌ Error submitting job: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Health check failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Service unhealthy")
 
-@app.get("/jobs/{job_id}")
-async def get_job_status(
-    job_id: str,
-    x_client_id: str = Header(..., alias="X-Client-ID")
-):
-    """Get job status"""
-    try:
-        async with postgres_pool.acquire() as conn:
-            job = await conn.fetchrow("""
-                SELECT job_id, status, result, error, created_at, completed_at
-                FROM jobs WHERE job_id = $1 AND client_id = $2
-            """, job_id, x_client_id)
-            
-            if not job:
-                raise HTTPException(status_code=404, detail="Job not found")
-            
-            return {
-                "job_id": job["job_id"],
-                "status": job["status"],
-                "result": json.loads(job["result"]) if job["result"] else None,
-                "error": job["error"],
-                "created_at": job["created_at"].isoformat() if job["created_at"] else None,
-                "completed_at": job["completed_at"].isoformat() if job["completed_at"] else None
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error getting job status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# === ENDPOINTS MANQUANTS POUR LE NODE MAC ===
-
-@app.post("/nodes/register")
-async def register_node(node_data: dict):
-    """Register a node with the gateway"""
-    node_id = node_data.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-    
-    try:
-        # Store node info in Redis
-        node_key = f"node:{node_id}:info"
-        await redis_client.hset(node_key, mapping={
-            "node_id": node_id,
-            "node_type": node_data.get("node_type", "unknown"),
-            "status": "active",
-            "performance_score": str(node_data.get("performance_score", 0)),
-            "cpu_usage": str(node_data.get("cpu_usage", 0)),
-            "memory_usage": str(node_data.get("memory_usage", 0)),
-            "registered_at": datetime.utcnow().isoformat(),
-            "last_seen": datetime.utcnow().isoformat()
-        })
-        
-        # Set expiration
-        await redis_client.expire(node_key, 300)  # 5 minutes
-        
-        # Add to active nodes set
-        await redis_client.sadd("nodes:active", node_id)
-        
-        logger.info(f"✅ Node registered: {node_id}")
-        return {"status": "registered", "node_id": node_id}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to register node {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/nodes/heartbeat")
-async def node_heartbeat(node_data: dict):
-    """Receive heartbeat from a node"""
-    node_id = node_data.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-    
-    try:
-        # Update node info in Redis
-        node_key = f"node:{node_id}:info"
-        
-        # Check if node exists
-        exists = await redis_client.exists(node_key)
-        if not exists:
-            # Auto-register if node doesn't exist
-            logger.info(f"Auto-registering node on heartbeat: {node_id}")
-            return await register_node(node_data)
-        
-        # Update node metrics
-        await redis_client.hset(node_key, mapping={
-            "status": node_data.get("status", "active"),
-            "performance_score": str(node_data.get("performance_score", 0)),
-            "cpu_usage": str(node_data.get("cpu_usage", 0)),
-            "memory_usage": str(node_data.get("memory_usage", 0)),
-            "jobs_completed": str(node_data.get("jobs_completed", 0)),
-            "uptime": str(node_data.get("uptime", 0)),
-            "last_seen": datetime.utcnow().isoformat()
-        })
-        
-        # Refresh expiration
-        await redis_client.expire(node_key, 300)
-        
-        # Ensure in active set
-        await redis_client.sadd("nodes:active", node_id)
-        
-        return {"status": "heartbeat_received", "node_id": node_id}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to process heartbeat for {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/nodes")
-async def list_nodes():
-    """List all active nodes"""
-    try:
-        active_nodes = await redis_client.smembers("nodes:active")
-        nodes = []
-        
-        for node_id in active_nodes:
-            node_key = f"node:{node_id}:info"
-            node_info = await redis_client.hgetall(node_key)
-            if node_info:
-                nodes.append(node_info)
-        
-        return {"nodes": nodes, "count": len(nodes)}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to list nodes: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/nodes/{node_id}")
-async def get_node_info(node_id: str):
-    """Get specific node information"""
-    try:
-        node_key = f"node:{node_id}:info"
-        node_info = await redis_client.hgetall(node_key)
-        
-        if not node_info:
-            raise HTTPException(status_code=404, detail="Node not found")
-            
-        return node_info
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Failed to get node info for {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/stats")
-async def get_stats():
-    """Get system statistics including node information"""
-    try:
-        # Get basic stats
-        total_jobs = await redis_client.get("stats:total_jobs") or "0"
-        active_jobs = await redis_client.get("stats:active_jobs") or "0"
-        
-        # Get node stats
-        active_nodes = await redis_client.smembers("nodes:active")
-        node_count = len(active_nodes)
-        
-        # Get detailed node info
-        nodes = []
-        for node_id in active_nodes:
-            node_key = f"node:{node_id}:info"
-            node_info = await redis_client.hgetall(node_key)
-            if node_info:
-                nodes.append({
-                    "node_id": node_info.get("node_id"),
-                    "node_type": node_info.get("node_type"),
-                    "status": node_info.get("status"),
-                    "performance_score": int(node_info.get("performance_score", 0)),
-                    "cpu_usage": float(node_info.get("cpu_usage", 0)),
-                    "memory_usage": float(node_info.get("memory_usage", 0)),
-                    "jobs_completed": int(node_info.get("jobs_completed", 0)),
-                    "last_seen": node_info.get("last_seen")
-                })
-        
-        return {
-            "total_jobs": int(total_jobs),
-            "active_jobs": int(active_jobs),
-            "nodes": {
-                "total": node_count,
-                "active": node_count,
-                "details": nodes
-            },
-            "system": {
-                "status": "healthy",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to get stats: {e}")
-        return {
-            "total_jobs": 0,
-            "active_jobs": 0,
-            "nodes": {"total": 0, "active": 0, "details": []},
-            "system": {"status": "error", "error": str(e)}
-        }
-
-# Metrics endpoint for Prometheus
 @app.get("/metrics")
 async def metrics():
     """Prometheus metrics endpoint"""
+    return Response(content=generate_latest(), media_type="text/plain")
+
+async def verify_token(token: str) -> bool:
+    """Verify client token (simplified for MVP)"""
+    # In production, verify JWT and check $NRG balance
+    if not token or token == "Bearer ":
+        return False
+    
+    # Check cached balance in Redis
     try:
-        # Get basic metrics
-        active_nodes = await redis_client.smembers("nodes:active")
-        total_jobs = await redis_client.get("stats:total_jobs") or "0"
-        active_jobs = await redis_client.get("stats:active_jobs") or "0"
+        # For MVP, just check if token exists
+        cached = await redis_client.get(f"token:{token}")
+        if cached:
+            return True
         
-        metrics_text = f"""# HELP synapse_nodes_total Total number of active nodes
-# TYPE synapse_nodes_total gauge
-synapse_nodes_total {len(active_nodes)}
-
-# HELP synapse_jobs_total Total number of jobs processed
-# TYPE synapse_jobs_total counter
-synapse_jobs_total {total_jobs}
-
-# HELP synapse_jobs_active Number of currently active jobs
-# TYPE synapse_jobs_active gauge
-synapse_jobs_active {active_jobs}
-"""
-        
-        return Response(content=metrics_text, media_type="text/plain")
-        
+        # In production, verify with blockchain
+        # For now, accept any non-empty token
+        await redis_client.setex(f"token:{token}", 300, "valid")
+        return True
     except Exception as e:
-        logger.error(f"❌ Error generating metrics: {e}")
-        return Response(content="# Error generating metrics", media_type="text/plain")
+        logger.error("Token verification failed", error=str(e))
+        return False
+
+@app.post("/submit", response_model=JobResponse)
+async def submit_job(
+    job: JobSubmission,
+    authorization: str = Header(None),
+    x_client_id: str = Header(None)
+):
+    """Submit a new job for processing"""
+    job_counter.inc()
+    
+    with job_latency.time():
+        # Verify authorization
+        if not authorization or not await verify_token(authorization.replace("Bearer ", "")):
+            auth_failures.inc()
+            raise HTTPException(status_code=401, detail="Invalid authorization")
+        
+        # Generate job ID
+        job_id = f"job_{int(time.time() * 1000)}_{x_client_id or 'anonymous'}"
+        
+        # Create job object
+        job_data = {
+            "job_id": job_id,
+            "model_name": job.model_name,
+            "input_data": job.input_data,
+            "priority": job.priority,
+            "client_id": x_client_id or "anonymous",
+            "status": JobStatus.PENDING.value,
+            "submitted_at": datetime.utcnow().isoformat(),
+            "region": os.getenv("REGION", "us-east")
+        }
+        
+        try:
+            # Store job in Redis
+            await redis_client.hset(f"job:{job_id}", mapping=job_data)
+            
+            # Add to job queue
+            queue_key = f"jobs:queue:{job_data['region']}"
+            await redis_client.zadd(queue_key, {job_id: job.priority})
+            
+            # Publish job event
+            await redis_client.publish("job:submitted", json.dumps({
+                "job_id": job_id,
+                "model_name": job.model_name,
+                "region": job_data['region']
+            }))
+            
+            logger.info("Job submitted", 
+                       job_id=job_id, 
+                       model=job.model_name,
+                       client=x_client_id)
+            
+            return JobResponse(
+                job_id=job_id,
+                status=JobStatus.PENDING.value,
+                submitted_at=job_data['submitted_at'],
+                estimated_completion=None
+            )
+            
+        except Exception as e:
+            logger.error("Job submission failed", error=str(e), job_id=job_id)
+            raise HTTPException(status_code=500, detail="Failed to submit job")
+
+@app.get("/job/{job_id}")
+async def get_job_status(job_id: str):
+    """Get job status"""
+    try:
+        job_data = await redis_client.hgetall(f"job:{job_id}")
+        if not job_data:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        return job_data
+    except Exception as e:
+        logger.error("Failed to get job status", error=str(e), job_id=job_id)
+        raise HTTPException(status_code=500, detail="Failed to get job status")
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket):
+    """WebSocket endpoint for real-time updates"""
+    await websocket.accept()
+    try:
+        # Subscribe to job updates
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe("job:*")
+        
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True)
+            if message:
+                await websocket.send_json({
+                    "channel": message['channel'],
+                    "data": message['data']
+                })
+            await asyncio.sleep(0.1)
+            
+    except Exception as e:
+        logger.error("WebSocket error", error=str(e))
+    finally:
+        await websocket.close()
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
-
-# === ENDPOINTS MANQUANTS POUR LE NODE MAC ===
-
-@app.post("/nodes/register")
-async def register_node(node_data: dict):
-    """Register a node with the gateway"""
-    node_id = node_data.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-    
-    try:
-        # Store node info in Redis
-        node_key = f"node:{node_id}:info"
-        node_info = {
-            "node_id": node_id,
-            "node_type": node_data.get("node_type", "unknown"),
-            "status": "active",
-            "performance_score": str(node_data.get("performance_score", 0)),
-            "cpu_usage": str(node_data.get("cpu_usage", 0)),
-            "memory_usage": str(node_data.get("memory_usage", 0)),
-            "registered_at": datetime.utcnow().isoformat(),
-            "last_seen": datetime.utcnow().isoformat()
-        }
-        
-        # Use deprecated hset for compatibility
-        for key, value in node_info.items():
-            await redis_client.hset(node_key, key, value)
-        
-        # Set expiration
-        await redis_client.expire(node_key, 300)  # 5 minutes
-        
-        # Add to active nodes set
-        await redis_client.sadd("nodes:active", node_id)
-        
-        logger.info(f"✅ Node registered: {node_id}")
-        return {"status": "registered", "node_id": node_id}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to register node {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/nodes/heartbeat")
-async def node_heartbeat(node_data: dict):
-    """Receive heartbeat from a node"""
-    node_id = node_data.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-    
-    try:
-        # Update node info in Redis
-        node_key = f"node:{node_id}:info"
-        
-        # Check if node exists
-        exists = await redis_client.exists(node_key)
-        if not exists:
-            # Auto-register if node doesn't exist
-            logger.info(f"Auto-registering node on heartbeat: {node_id}")
-            return await register_node(node_data)
-        
-        # Update node metrics individually for compatibility
-        updates = {
-            "status": node_data.get("status", "active"),
-            "performance_score": str(node_data.get("performance_score", 0)),
-            "cpu_usage": str(node_data.get("cpu_usage", 0)),
-            "memory_usage": str(node_data.get("memory_usage", 0)),
-            "jobs_completed": str(node_data.get("jobs_completed", 0)),
-            "uptime": str(node_data.get("uptime", 0)),
-            "last_seen": datetime.utcnow().isoformat()
-        }
-        
-        for key, value in updates.items():
-            await redis_client.hset(node_key, key, value)
-        
-        # Refresh expiration
-        await redis_client.expire(node_key, 300)
-        
-        # Ensure in active set
-        await redis_client.sadd("nodes:active", node_id)
-        
-        logger.info(f"💓 Heartbeat received from {node_id}")
-        return {"status": "heartbeat_received", "node_id": node_id}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to process heartbeat for {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/nodes")
-async def list_nodes():
-    """List all active nodes"""
-    try:
-        active_nodes = await redis_client.smembers("nodes:active")
-        nodes = []
-        
-        for node_id in active_nodes:
-            node_key = f"node:{node_id}:info"
-            node_info = await redis_client.hgetall(node_key)
-            if node_info:
-                nodes.append(node_info)
-        
-        return {"nodes": nodes, "count": len(nodes)}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to list nodes: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/nodes/{node_id}")
-async def get_node_info(node_id: str):
-    """Get specific node information"""
-    try:
-        node_key = f"node:{node_id}:info"
-        node_info = await redis_client.hgetall(node_key)
-        
-        if not node_info:
-            raise HTTPException(status_code=404, detail="Node not found")
-            
-        return node_info
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Failed to get node info for {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ===================================================================
-# ENDPOINTS MANQUANTS POUR RÉSOUDRE LES 404 - AJOUT URGENT
-# ===================================================================
-
-@app.post("/nodes/register")
-async def register_node(node_data: dict):
-    """Register a node with the gateway - ENDPOINT MANQUANT"""
-    node_id = node_data.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-    
-    try:
-        # Store node info in Redis
-        node_key = f"node:{node_id}:info"
-        
-        # Use individual hset calls for maximum compatibility
-        await redis_client.hset(node_key, "node_id", node_id)
-        await redis_client.hset(node_key, "node_type", node_data.get("node_type", "unknown"))
-        await redis_client.hset(node_key, "status", "active")
-        await redis_client.hset(node_key, "performance_score", str(node_data.get("performance_score", 0)))
-        await redis_client.hset(node_key, "cpu_usage", str(node_data.get("cpu_usage", 0)))
-        await redis_client.hset(node_key, "memory_usage", str(node_data.get("memory_usage", 0)))
-        await redis_client.hset(node_key, "registered_at", datetime.utcnow().isoformat())
-        await redis_client.hset(node_key, "last_seen", datetime.utcnow().isoformat())
-        
-        # Set expiration
-        await redis_client.expire(node_key, 300)
-        
-        # Add to active nodes set
-        await redis_client.sadd("nodes:active", node_id)
-        
-        logger.info(f"✅ Node registered: {node_id}")
-        return {"status": "registered", "node_id": node_id}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to register node {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/nodes/heartbeat")
-async def node_heartbeat(node_data: dict):
-    """Receive heartbeat from a node - ENDPOINT MANQUANT CRITIQUE"""
-    node_id = node_data.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-    
-    try:
-        # Update node info in Redis
-        node_key = f"node:{node_id}:info"
-        
-        # Check if node exists
-        exists = await redis_client.exists(node_key)
-        if not exists:
-            # Auto-register if node doesn't exist
-            logger.info(f"🔄 Auto-registering node on heartbeat: {node_id}")
-            return await register_node(node_data)
-        
-        # Update node metrics individually for compatibility
-        await redis_client.hset(node_key, "status", node_data.get("status", "active"))
-        await redis_client.hset(node_key, "performance_score", str(node_data.get("performance_score", 0)))
-        await redis_client.hset(node_key, "cpu_usage", str(node_data.get("cpu_usage", 0)))
-        await redis_client.hset(node_key, "memory_usage", str(node_data.get("memory_usage", 0)))
-        await redis_client.hset(node_key, "jobs_completed", str(node_data.get("jobs_completed", 0)))
-        await redis_client.hset(node_key, "uptime", str(node_data.get("uptime", 0)))
-        await redis_client.hset(node_key, "last_seen", datetime.utcnow().isoformat())
-        
-        # Refresh expiration
-        await redis_client.expire(node_key, 300)
-        
-        # Ensure in active set
-        await redis_client.sadd("nodes:active", node_id)
-        
-        logger.info(f"💓 Heartbeat OK from {node_id}")
-        return {"status": "heartbeat_received", "node_id": node_id}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to process heartbeat for {node_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/nodes")
-async def list_nodes():
-    """List all active nodes"""
-    try:
-        active_nodes = await redis_client.smembers("nodes:active")
-        nodes = []
-        
-        for node_id in active_nodes:
-            node_key = f"node:{node_id}:info"
-            node_info = await redis_client.hgetall(node_key)
-            if node_info:
-                nodes.append(node_info)
-        
-        return {"nodes": nodes, "count": len(nodes)}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to list nodes: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/metrics")
-async def prometheus_metrics():
-    """Prometheus metrics endpoint - ENDPOINT MANQUANT"""
-    try:
-        # Get basic metrics
-        active_nodes = await redis_client.smembers("nodes:active")
-        total_jobs = await redis_client.get("stats:total_jobs") or "0"
-        active_jobs = await redis_client.get("stats:active_jobs") or "0"
-        
-        metrics_text = f"""# HELP synapse_nodes_total Total number of active nodes
-# TYPE synapse_nodes_total gauge
-synapse_nodes_total {len(active_nodes)}
-
-# HELP synapse_jobs_total Total number of jobs processed
-# TYPE synapse_jobs_total counter
-synapse_jobs_total {total_jobs}
-
-# HELP synapse_jobs_active Number of currently active jobs
-# TYPE synapse_jobs_active gauge
-synapse_jobs_active {active_jobs}
-
-# HELP synapse_gateway_requests_total Total gateway requests
-# TYPE synapse_gateway_requests_total counter
-synapse_gateway_requests_total 1
-"""
-        
-        return Response(content=metrics_text, media_type="text/plain")
-        
-    except Exception as e:
-        logger.error(f"❌ Error generating metrics: {e}")
-        return Response(content="# Error generating metrics", media_type="text/plain")
-
-# Amélioration de l'endpoint stats existant
-@app.get("/stats")
-async def get_enhanced_stats():
-    """Get enhanced system statistics including node information"""
-    try:
-        # Get basic stats
-        total_jobs = await redis_client.get("stats:total_jobs") or "0"
-        active_jobs = await redis_client.get("stats:active_jobs") or "0"
-        
-        # Get node stats
-        active_nodes = await redis_client.smembers("nodes:active")
-        node_count = len(active_nodes)
-        
-        # Get detailed node info
-        nodes = []
-        for node_id in active_nodes:
-            node_key = f"node:{node_id}:info"
-            node_info = await redis_client.hgetall(node_key)
-            if node_info:
-                nodes.append({
-                    "node_id": node_info.get("node_id"),
-                    "node_type": node_info.get("node_type"),
-                    "status": node_info.get("status"),
-                    "performance_score": int(node_info.get("performance_score", 0)),
-                    "cpu_usage": float(node_info.get("cpu_usage", 0)),
-                    "memory_usage": float(node_info.get("memory_usage", 0)),
-                    "jobs_completed": int(node_info.get("jobs_completed", 0)),
-                    "last_seen": node_info.get("last_seen")
-                })
-        
-        return {
-            "total_jobs": int(total_jobs),
-            "active_jobs": int(active_jobs),
-            "nodes": {
-                "total": node_count,
-                "active": node_count,
-                "details": nodes
-            },
-            "system": {
-                "status": "healthy",
-                "timestamp": datetime.utcnow().isoformat(),
-                "endpoints_fixed": True
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to get stats: {e}")
-        return {
-            "total_jobs": 0,
-            "active_jobs": 0,
-            "nodes": {"total": 0, "active": 0, "details": []},
-            "system": {"status": "error", "error": str(e)}
-        }
-
+    port = int(os.getenv("HTTP_PORT", "8080"))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

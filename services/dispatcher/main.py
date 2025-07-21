@@ -1,86 +1,197 @@
-# services/dispatcher/main.py - Self-contained
+#!/usr/bin/env python3
+"""Dispatcher Service - Assigns jobs to nodes based on scoring"""
+
+import os
+import sys
 import asyncio
 import json
-import logging
+import time
 from datetime import datetime
+from typing import Dict, List, Optional
 
-import aioredis
+import redis.asyncio as redis
+import structlog
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Add shared module to path
+# Path already set by PYTHONPATH env variable
+from shared.utils import get_redis_client
+from shared.models import JobStatus, NodeStatus
+
+# Configure structured logging
+logger = structlog.get_logger()
 
 class Dispatcher:
     def __init__(self):
-        self.redis = None
-        self.running = False
-    
-    async def start(self):
-        self.redis = aioredis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
-        await self.redis.ping()
+        self.redis_client = None
+        self.region = os.getenv("REGION", "us-east")
+        self.scheduler = AsyncIOScheduler()
         self.running = True
-        logger.info("✅ Dispatcher started")
         
-        await self.dispatch_loop()
+    async def initialize(self):
+        """Initialize connections and scheduler"""
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.redis_client = await redis.from_url(redis_url, decode_responses=True)
+        
+        # Schedule periodic tasks
+        self.scheduler.add_job(
+            self.rank_nodes,
+            'interval',
+            seconds=int(os.getenv("NODE_RANKING_INTERVAL", "30"))
+        )
+        self.scheduler.start()
+        
+        logger.info("Dispatcher initialized", region=self.region)
     
-    async def dispatch_loop(self):
+    async def rank_nodes(self):
+        """Rank nodes based on availability and performance"""
+        try:
+            # Get all nodes in region
+            node_keys = await self.redis_client.keys(f"node:*:{self.region}")
+            
+            node_scores = []
+            for key in node_keys:
+                node_data = await self.redis_client.hgetall(key)
+                if node_data.get('status') == NodeStatus.ONLINE.value:
+                    # Calculate score based on various factors
+                    score = self.calculate_node_score(node_data)
+                    node_scores.append((node_data['node_id'], score))
+            
+            # Sort by score (higher is better)
+            node_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            # Store ranked list in Redis
+            ranked_key = f"top_nodes:{self.region}"
+            await self.redis_client.delete(ranked_key)
+            
+            for node_id, score in node_scores[:20]:  # Keep top 20 nodes
+                await self.redis_client.zadd(ranked_key, {node_id: score})
+            
+            logger.info("Nodes ranked", region=self.region, count=len(node_scores))
+            
+        except Exception as e:
+            logger.error("Failed to rank nodes", error=str(e))
+    
+    def calculate_node_score(self, node_data: Dict) -> float:
+        """Calculate node score based on multiple factors"""
+        score = 100.0
+        
+        # CPU usage (lower is better)
+        cpu_usage = float(node_data.get('cpu_usage', 50))
+        score -= cpu_usage * 0.5
+        
+        # Memory availability
+        memory_available = float(node_data.get('memory_available', 50))
+        score += memory_available * 0.3
+        
+        # Success rate
+        success_rate = float(node_data.get('success_rate', 95))
+        score += success_rate * 0.2
+        
+        # Response time (lower is better)
+        avg_response_time = float(node_data.get('avg_response_time', 1000))
+        score -= (avg_response_time / 1000) * 10
+        
+        # Uptime bonus
+        uptime_hours = float(node_data.get('uptime_hours', 0))
+        score += min(uptime_hours, 24) * 0.5
+        
+        return max(score, 0)
+    
+    async def dispatch_jobs(self):
+        """Main dispatch loop"""
         while self.running:
             try:
-                # Process regular jobs
-                await self.process_queue("jobs:queue:eu-west-1")
-                # Process native jobs
-                await self.process_native_queue()
-                await asyncio.sleep(0.1)
+                # Get pending jobs from queue
+                queue_key = f"jobs:queue:{self.region}"
+                job_ids = await self.redis_client.zrange(queue_key, 0, 10, desc=True)
+                
+                if job_ids:
+                    # Get available nodes
+                    ranked_key = f"top_nodes:{self.region}"
+                    top_nodes = await self.redis_client.zrange(
+                        ranked_key, 0, -1, desc=True, withscores=True
+                    )
+                    
+                    for job_id in job_ids:
+                        await self.assign_job_to_node(job_id, top_nodes)
+                
+                await asyncio.sleep(0.5)  # Check every 500ms
+                
             except Exception as e:
-                logger.error(f"❌ Dispatch error: {e}")
+                logger.error("Dispatch error", error=str(e))
                 await asyncio.sleep(1)
     
-    async def process_queue(self, queue_key):
-        job_data = await self.redis.brpop(queue_key, timeout=1)
-        if job_data:
-            job = json.loads(job_data[1])
-            await self.dispatch_to_docker_node(job)
+    async def assign_job_to_node(self, job_id: str, available_nodes: List):
+        """Assign a job to the best available node"""
+        for node_id, score in available_nodes:
+            try:
+                # Try to claim the node for this job
+                lock_key = f"node_lock:{node_id}"
+                locked = await self.redis_client.setnx(lock_key, job_id)
+                
+                if locked:
+                    # Set expiry on lock (30 seconds)
+                    await self.redis_client.expire(lock_key, 30)
+                    
+                    # Update job status
+                    await self.redis_client.hset(
+                        f"job:{job_id}",
+                        mapping={
+                            "status": JobStatus.ASSIGNED.value,
+                            "assigned_node": node_id,
+                            "assigned_at": datetime.utcnow().isoformat()
+                        }
+                    )
+                    
+                    # Remove from pending queue
+                    queue_key = f"jobs:queue:{self.region}"
+                    await self.redis_client.zrem(queue_key, job_id)
+                    
+                    # Add to node's job queue
+                    node_queue = f"node_jobs:{node_id}"
+                    await self.redis_client.lpush(node_queue, job_id)
+                    
+                    # Publish assignment event
+                    await self.redis_client.publish(
+                        f"job:assigned:{node_id}",
+                        json.dumps({
+                            "job_id": job_id,
+                            "node_id": node_id,
+                            "timestamp": time.time()
+                        })
+                    )
+                    
+                    logger.info("Job assigned", 
+                               job_id=job_id, 
+                               node_id=node_id,
+                               score=score)
+                    break
+                    
+            except Exception as e:
+                logger.error("Failed to assign job", 
+                           error=str(e),
+                           job_id=job_id,
+                           node_id=node_id)
     
-    async def process_native_queue(self):
-        job_data = await self.redis.brpop("jobs:queue:native", timeout=1)
-        if job_data:
-            job = json.loads(job_data[1])
-            await self.dispatch_to_native_node(job)
-    
-    async def dispatch_to_docker_node(self, job):
-        logger.info(f"📤 Dispatching job {job['job_id']} to Docker node")
-        # Simulate job execution for Docker nodes
-        await asyncio.sleep(1)
-        result_data = {
-            "job_id": job["job_id"],
-            "node_id": "docker_node_001",
-            "success": "true",
-            "execution_time": "1.0",
-            "result": json.dumps({"message": "Docker simulation complete"}),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        await self.redis.xadd("job_results", result_data)
-    
-    async def dispatch_to_native_node(self, job):
-        # Find available native nodes
-        native_nodes = await self.redis.smembers("native_nodes")
+    async def run(self):
+        """Run the dispatcher"""
+        await self.initialize()
         
-        if native_nodes:
-            node_id = list(native_nodes)[0]
-            node_queue = f"node_jobs:{node_id}"
-            await self.redis.lpush(node_queue, json.dumps(job))
-            logger.info(f"📤 Dispatched job {job['job_id']} to Mac M2 node {node_id}")
-        else:
-            # Requeue if no native nodes
-            await self.redis.lpush("jobs:queue:native", json.dumps(job))
-            logger.warning(f"⚠️ No native nodes available, requeued job {job['job_id']}")
+        # Start dispatch task
+        dispatch_task = asyncio.create_task(self.dispatch_jobs())
+        
+        try:
+            await dispatch_task
+        except KeyboardInterrupt:
+            logger.info("Shutting down dispatcher")
+            self.running = False
+            self.scheduler.shutdown()
+            await self.redis_client.close()
 
 async def main():
     dispatcher = Dispatcher()
-    try:
-        await dispatcher.start()
-    except KeyboardInterrupt:
-        logger.info("🛑 Dispatcher shutdown")
-        dispatcher.running = False
+    await dispatcher.run()
 
 if __name__ == "__main__":
     asyncio.run(main())
