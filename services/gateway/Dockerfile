@@ -2,24 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
+# Copier requirements en premier pour le cache Docker
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copier TOUT le contenu du service
 COPY . .
 
-# Expose port
 EXPOSE 8080
 
-# Health check (syntaxe corrigée)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
-
-# Start the application
 CMD ["python", "main.py"]
