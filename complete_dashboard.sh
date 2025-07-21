@@ -1,3 +1,17 @@
+#!/bin/bash
+
+# Script pour créer le fichier App.js complet avec tout le code du dashboard
+
+echo "🧠⚡ Création du dashboard SynapseGrid complet..."
+
+# Vérifier qu'on est dans le bon répertoire
+if [ ! -f "package.json" ]; then
+    echo "❌ Erreur: Exécutez ce script depuis le répertoire dashboard/"
+    exit 1
+fi
+
+# Créer le fichier App.js complet
+cat > "src/App.js" << 'EOF'
 import React, { useState, useEffect } from 'react';
 import { 
   Activity, 
@@ -994,3 +1008,11 @@ const MetricCard = ({ title, value, change, icon: Icon, color }) => (
 );
 
 export default SynapseGridDashboard;
+EOF
+
+echo "✅ Fichier src/App.js créé avec le dashboard complet !"
+echo ""
+echo "🚀 Pour démarrer le dashboard :"
+echo "   npm start"
+echo ""
+echo "🌐 Dashboard sera disponible sur : http://localhost:3000"

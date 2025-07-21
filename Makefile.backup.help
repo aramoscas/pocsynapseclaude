@@ -29,13 +29,11 @@ help: ## Show help
 	@echo "$(BLUE)🧠⚡ SynapseGrid - Decentralized AI Infrastructure$(NC)"
 	@echo "=================================================="
 	@echo "$(GREEN)Available commands:$(NC)"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-15s$(NC) %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-15s$(NC) %s\n", $1, $2}'
 	@echo ""
 	@echo "$(GREEN)URLs after start:$(NC)"
 	@echo "  Dashboard:  http://localhost:$(DASHBOARD_PORT)"
 	@echo "  Gateway:    http://localhost:$(GATEWAY_PORT)"
-	@echo "  Grafana:    http://localhost:3001"
-	@echo "  Prometheus: http://localhost:9090"
 
 setup: ## Setup dependencies
 	@echo "$(BLUE)[SETUP]$(NC) Installing dependencies..."
@@ -162,23 +160,11 @@ clean: ## Clean up
 	@rm -f *.log
 	@echo "$(GREEN)[CLEAN]$(NC) Cleanup complete"
 
-restart: ## Restart all services
-	@$(MAKE) stop
-	@sleep 2
-	@$(MAKE) start
-
-info: ## Show system information
-	@echo "$(BLUE)[INFO]$(NC) System Information:"
-	@echo "OS: $(shell uname -s)"
-	@echo "Architecture: $(shell uname -m)"
-	@echo "Node.js: $(shell node --version 2>/dev/null || echo 'Not installed')"
-	@echo "Docker: $(shell docker --version 2>/dev/null || echo 'Not installed')"
-	@echo "Dashboard: $(shell [ -d dashboard ] && echo 'Installed' || echo 'Not installed')"
-
 proto: ## Generate protobuf files (legacy)
 	@echo "$(BLUE)[PROTO]$(NC) Protobuf generation..."
 	@echo "$(YELLOW)⚠$(NC) Proto generation - implement if needed"
 
+# Fix target for this script
 fix: ## Run ultimate fix
 	@./ultimate_fix.sh
 
