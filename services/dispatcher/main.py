@@ -24,7 +24,7 @@ logger = structlog.get_logger()
 class Dispatcher:
     def __init__(self):
         self.redis_client = None
-        self.region = os.getenv("REGION", "us-east")
+        self.region = os.getenv("REGION", "eu-west-1")
         self.scheduler = AsyncIOScheduler()
         self.running = True
         

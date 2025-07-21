@@ -102,7 +102,7 @@ services:
     environment:
       - GATEWAY_URL=http://gateway:8080
       - NODE_ID=node-001
-      - REGION=us-east
+      - REGION=eu-west-1
       - REDIS_URL=redis://redis:6379
     depends_on:
       - gateway

@@ -2,5 +2,4 @@
 numpy==1.24.3
 psutil==5.9.6
 aiofiles==23.2.1
-# ONNX désactivé temporairement pour M2
-# onnxruntime==1.16.3
+onnxruntime==1.16.3
