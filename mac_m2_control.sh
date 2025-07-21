@@ -554,3 +554,65 @@ HELP_EOF
         exit 1
         ;;
 esac
+
+wait_for_gateway() {
+    log "Attente du Gateway..."
+    local max_attempts=30
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        if curl -s "http://localhost:8080/health" >/dev/null 2>&1; then
+            success "Gateway disponible ✓"
+            return 0
+        fi
+        
+        warn "Gateway non disponible, tentative $attempt/$max_attempts..."
+        sleep 2
+        ((attempt++))
+    done
+    
+    error "Gateway non disponible après $max_attempts tentatives"
+    return 1
+}
+
+# Update start function to wait for gateway
+start_mac_node() {
+    mac_log "Démarrage du nœud Mac M2 natif..."
+    
+    if is_mac_running; then
+        warn "Nœud Mac M2 déjà actif"
+        return 0
+    fi
+    
+    check_dependencies || return 1
+    
+    # Wait for gateway to be ready
+    wait_for_gateway || {
+        error "Impossible de démarrer sans Gateway"
+        return 1
+    }
+    
+    # Create service if needed
+    if [ ! -f "$MAC_NODE_SCRIPT" ]; then
+        log "Service Mac M2 non trouvé, création..."
+        create_mac_node_service
+    fi
+    
+    # Start in background
+    nohup python3 "$MAC_NODE_SCRIPT" > "$MAC_LOG_FILE" 2>&1 &
+    local pid=$!
+    echo $pid > "$MAC_PID_FILE"
+    
+    # Wait for startup
+    sleep 3
+    
+    if is_mac_running; then
+        success "Nœud Mac M2 démarré (PID: $pid)"
+        success "Status: http://localhost:$NODE_PORT/status"
+        success "Logs: tail -f $MAC_LOG_FILE"
+        return 0
+    else
+        error "Échec du démarrage du nœud Mac M2"
+        return 1
+    fi
+}

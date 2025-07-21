@@ -1,4 +1,4 @@
-# services/gateway/main.py - Version corrigée avec tous les endpoints
+# services/gateway/main.py - Self-contained version
 import asyncio
 import json
 import logging
@@ -10,7 +10,7 @@ from datetime import datetime
 
 import aioredis
 import asyncpg
-from fastapi import FastAPI, HTTPException, Depends, Header, Response
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -36,11 +36,12 @@ class SubmitJobRequest(BaseModel):
     timeout: int = 300
     gpu_requirements: Optional[Dict[str, Any]] = None
 
-# Utility functions
+# Utility functions (inline instead of shared import)
 def generate_job_id() -> str:
     return f"job_{uuid.uuid4().hex[:12]}"
 
 def verify_token(token: str) -> bool:
+    # Simplified token verification
     return token == "test-token"
 
 # Global state
@@ -81,33 +82,28 @@ async def shutdown():
         await redis_client.close()
     if postgres_pool:
         await postgres_pool.close()
+    logger.info("Gateway shutdown complete")
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     try:
-        # Test Redis connection
+        # Check Redis
         await redis_client.ping()
-        redis_status = "healthy"
-    except:
-        redis_status = "unhealthy"
-    
-    try:
-        # Test PostgreSQL connection
+        
+        # Check PostgreSQL
         async with postgres_pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
-        postgres_status = "healthy"
-    except:
-        postgres_status = "unhealthy"
-    
-    return {
-        "status": "healthy" if redis_status == "healthy" and postgres_status == "healthy" else "degraded",
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "redis": redis_status,
-            "postgres": postgres_status
+        
+        return {
+            "status": "healthy", 
+            "timestamp": datetime.utcnow().isoformat(),
+            "services": {
+                "redis": "healthy",
+                "postgres": "healthy"
+            }
         }
-    }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Health check failed: {str(e)}")
 
 @app.post("/submit")
 async def submit_job(
@@ -115,33 +111,40 @@ async def submit_job(
     authorization: str = Header(...),
     x_client_id: str = Header(..., alias="X-Client-ID")
 ):
-    """Submit a job for processing"""
-    # Validate token
+    # Verify token
     token = authorization.replace("Bearer ", "")
     if not verify_token(token):
         raise HTTPException(status_code=401, detail="Invalid token")
     
+    # Generate job
+    job_id = generate_job_id()
+    
+    job_data = {
+        "job_id": job_id,
+        "client_id": x_client_id,
+        "model_name": request.model_name,
+        "input_data": request.input_data,
+        "priority": request.priority,
+        "timeout": request.timeout,
+        "gpu_requirements": request.gpu_requirements or {},
+        "created_at": datetime.utcnow().isoformat(),
+        "status": "queued"
+    }
+    
     try:
-        job_id = generate_job_id()
+        # Push to queue
+        await redis_client.lpush("jobs:queue:eu-west-1", json.dumps(job_data))
         
-        # Store job in database
+        # Store in database
         async with postgres_pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO jobs (job_id, client_id, model_name, input_data, status, created_at, priority)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """, job_id, x_client_id, request.model_name, json.dumps(request.input_data), "queued", 
-            datetime.utcnow(), request.priority)
-        
-        # Add to Redis queue
-        await redis_client.lpush("jobs:queue", json.dumps({
-            "job_id": job_id,
-            "client_id": x_client_id,
-            "model_name": request.model_name,
-            "input_data": request.input_data,
-            "priority": request.priority,
-            "timeout": request.timeout,
-            "gpu_requirements": request.gpu_requirements
-        }))
+                INSERT INTO jobs (job_id, client_id, model_name, input_data, 
+                                status, created_at, estimated_cost, priority)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """, 
+            job_id, x_client_id, request.model_name, 
+            json.dumps(request.input_data), "queued", 
+            datetime.utcnow(), 0.01, request.priority)
         
         logger.info(f"📤 Job {job_id} submitted by {x_client_id}")
         
@@ -161,7 +164,6 @@ async def get_job_status(
     job_id: str,
     x_client_id: str = Header(..., alias="X-Client-ID")
 ):
-    """Get job status"""
     try:
         async with postgres_pool.acquire() as conn:
             job = await conn.fetchrow("""
@@ -186,8 +188,137 @@ async def get_job_status(
         logger.error(f"❌ Error getting job status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# === ENDPOINTS MANQUANTS POUR LE NODE MAC ===
+@app.post("/nodes/register")
+async def register_node(node_data: dict):
+    node_id = node_data.get("node_id")
+    node_type = node_data.get("node_type", "docker")
+    
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+    
+    try:
+        # Register in Redis
+        node_key = f"node:{node_id}:local:info"
+        await redis_client.hmset(node_key, {
+            "node_id": node_id,
+            "node_type": node_type,
+            "status": "available",
+            "last_seen": datetime.utcnow().isoformat()
+        })
+        await redis_client.expire(node_key, 60)
+        
+        if node_type == "mac_m2_native":
+            await redis_client.sadd("native_nodes", node_id)
+        
+        logger.info(f"✅ Registered {node_type} node: {node_id}")
+        
+        return {"status": "registered", "node_id": node_id, "node_type": node_type}
+        
+    except Exception as e:
+        logger.error(f"❌ Registration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/jobs/submit/native")
+async def submit_native_job(
+    request: SubmitJobRequest,
+    authorization: str = Header(...),
+    x_client_id: str = Header(..., alias="X-Client-ID")
+):
+    # Verify token
+    token = authorization.replace("Bearer ", "")
+    if not verify_token(token):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    # Check native nodes available
+    try:
+        native_nodes = await redis_client.smembers("native_nodes")
+        if not native_nodes:
+            raise HTTPException(status_code=503, detail="No native nodes available")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking native nodes: {e}")
+    
+    job_id = generate_job_id()
+    
+    job_data = {
+        "job_id": job_id,
+        "client_id": x_client_id,
+        "model_name": request.model_name,
+        "input_data": request.input_data,
+        "priority": request.priority,
+        "timeout": request.timeout,
+        "gpu_requirements": request.gpu_requirements or {},
+        "created_at": datetime.utcnow().isoformat(),
+        "status": "queued",
+        "target_node_type": "native"
+    }
+    
+    try:
+        await redis_client.lpush("jobs:queue:native", json.dumps(job_data))
+        
+        logger.info(f"📤 Native job {job_id} submitted by {x_client_id}")
+        
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "target_type": "native",
+            "estimated_cost": 0.15,
+            "message": "Job submitted to native queue"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error submitting native job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/nodes")
+async def list_nodes():
+    try:
+        node_keys = await redis_client.keys("node:*:*:info")
+        nodes = []
+        
+        for key in node_keys:
+            node_data = await redis_client.hgetall(key)
+            if node_data:
+                nodes.append({
+                    "node_id": node_data.get("node_id"),
+                    "node_type": node_data.get("node_type", "docker"),
+                    "status": node_data.get("status"),
+                    "last_seen": node_data.get("last_seen")
+                })
+        
+        return nodes
+        
+    except Exception as e:
+        logger.error(f"❌ Error listing nodes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/nodes/native")
+async def list_native_nodes():
+    try:
+        native_node_ids = await redis_client.smembers("native_nodes")
+        nodes = []
+        
+        for node_id in native_node_ids:
+            node_keys = await redis_client.keys(f"node:{node_id}:*:info")
+            if node_keys:
+                node_data = await redis_client.hgetall(node_keys[0])
+                if node_data:
+                    nodes.append({
+                        "node_id": node_data.get("node_id"),
+                        "node_type": node_data.get("node_type"),
+                        "status": node_data.get("status"),
+                        "last_seen": node_data.get("last_seen")
+                    })
+        
+        return {"native_nodes": nodes, "count": len(nodes)}
+        
+    except Exception as e:
+        logger.error(f"❌ Error listing native nodes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True, log_level="info")
+
+# Node Management Endpoints (Missing endpoints causing 404)
 @app.post("/nodes/register")
 async def register_node(node_data: dict):
     """Register a node with the gateway"""
@@ -198,7 +329,7 @@ async def register_node(node_data: dict):
     try:
         # Store node info in Redis
         node_key = f"node:{node_id}:info"
-        await redis_client.hset(node_key, mapping={
+        await redis_client.hmset(node_key, {
             "node_id": node_id,
             "node_type": node_data.get("node_type", "unknown"),
             "status": "active",
@@ -241,7 +372,7 @@ async def node_heartbeat(node_data: dict):
             return await register_node(node_data)
         
         # Update node metrics
-        await redis_client.hset(node_key, mapping={
+        await redis_client.hmset(node_key, {
             "status": node_data.get("status", "active"),
             "performance_score": str(node_data.get("performance_score", 0)),
             "cpu_usage": str(node_data.get("cpu_usage", 0)),
@@ -300,6 +431,7 @@ async def get_node_info(node_id: str):
         logger.error(f"❌ Failed to get node info for {node_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Update stats endpoint to include node information
 @app.get("/stats")
 async def get_stats():
     """Get system statistics including node information"""
@@ -352,34 +484,3 @@ async def get_stats():
             "system": {"status": "error", "error": str(e)}
         }
 
-# Metrics endpoint for Prometheus
-@app.get("/metrics")
-async def metrics():
-    """Prometheus metrics endpoint"""
-    try:
-        # Get basic metrics
-        active_nodes = await redis_client.smembers("nodes:active")
-        total_jobs = await redis_client.get("stats:total_jobs") or "0"
-        active_jobs = await redis_client.get("stats:active_jobs") or "0"
-        
-        metrics_text = f"""# HELP synapse_nodes_total Total number of active nodes
-# TYPE synapse_nodes_total gauge
-synapse_nodes_total {len(active_nodes)}
-
-# HELP synapse_jobs_total Total number of jobs processed
-# TYPE synapse_jobs_total counter
-synapse_jobs_total {total_jobs}
-
-# HELP synapse_jobs_active Number of currently active jobs
-# TYPE synapse_jobs_active gauge
-synapse_jobs_active {active_jobs}
-"""
-        
-        return Response(content=metrics_text, media_type="text/plain")
-        
-    except Exception as e:
-        logger.error(f"❌ Error generating metrics: {e}")
-        return Response(content="# Error generating metrics", media_type="text/plain")
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)

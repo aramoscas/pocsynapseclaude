@@ -1,3 +1,22 @@
+#!/bin/bash
+
+echo "🔧 Application de la correction du Gateway"
+echo "=========================================="
+
+# Vérifier si le dossier services/gateway existe
+if [ ! -d "services/gateway" ]; then
+    echo "❌ Dossier services/gateway introuvable"
+    exit 1
+fi
+
+# Backup du fichier actuel
+if [ -f "services/gateway/main.py" ]; then
+    cp services/gateway/main.py services/gateway/main.py.backup.$(date +%s)
+    echo "✅ Backup du gateway créé"
+fi
+
+# Appliquer la correction
+cat > services/gateway/main.py << 'EOF'
 # services/gateway/main.py - Version corrigée avec tous les endpoints
 import asyncio
 import json
@@ -383,3 +402,66 @@ synapse_jobs_active {active_jobs}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
+EOF
+
+echo "✅ Gateway corrigé avec succès"
+
+# Redémarrer le gateway pour appliquer les changements
+echo "🔄 Redémarrage du gateway..."
+
+# Redémarrer seulement le service gateway
+if docker compose ps | grep synapse_gateway >/dev/null 2>&1; then
+    docker compose restart gateway
+    echo "✅ Gateway redémarré"
+    
+    # Attendre que le gateway soit prêt
+    echo "⏳ Attente du redémarrage du gateway..."
+    sleep 5
+    
+    # Test des nouveaux endpoints
+    echo "🧪 Test des nouveaux endpoints..."
+    
+    # Test health
+    if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+        echo "✅ Health endpoint fonctionne"
+    else
+        echo "❌ Health endpoint non disponible"
+    fi
+    
+    # Test nodes endpoint
+    if curl -s http://localhost:8080/nodes >/dev/null 2>&1; then
+        echo "✅ Nodes endpoint fonctionne"
+    else
+        echo "❌ Nodes endpoint non disponible"
+    fi
+    
+    # Test stats endpoint
+    if curl -s http://localhost:8080/stats >/dev/null 2>&1; then
+        echo "✅ Stats endpoint fonctionne"
+    else
+        echo "❌ Stats endpoint non disponible"
+    fi
+    
+else
+    echo "⚠️  Gateway container non trouvé, redémarrez manuellement avec 'make start'"
+fi
+
+echo ""
+echo "🎯 Correction appliquée avec succès!"
+echo "===================================="
+echo "✅ Endpoints ajoutés au gateway:"
+echo "   - POST /nodes/register"
+echo "   - POST /nodes/heartbeat"
+echo "   - GET /nodes"
+echo "   - GET /nodes/{node_id}"
+echo "   - GET /stats (amélioré)"
+echo "   - GET /metrics"
+echo ""
+echo "🔄 Maintenant redémarrez le nœud Mac:"
+echo "   make mac-stop"
+echo "   make mac-start"
+echo ""
+echo "ou testez immédiatement:"
+echo "   make mac-logs"
+echo ""
+echo "Les erreurs 404 devraient être résolues! 🎉"

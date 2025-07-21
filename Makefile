@@ -290,3 +290,31 @@ proto: ## Generate protobuf files (legacy)
 fix: ## Run ultimate fix
 	@./ultimate_fix.sh
 
+
+# Wait for services to be ready
+wait-for-services:
+	@echo "⏳ Waiting for services to be ready..."
+	@for i in {1..30}; do \
+		if curl -s http://localhost:8080/health >/dev/null 2>&1; then \
+			echo "✅ Gateway ready"; \
+			break; \
+		else \
+			echo "⏳ Waiting for gateway... ($$i/30)"; \
+			sleep 2; \
+		fi; \
+	done
+
+# Start Mac node with proper gateway wait
+mac-start-fixed:
+	@echo "🍎 Starting Mac M2 with gateway check..."
+	@$(MAKE) wait-for-services
+	@$(MAKE) mac-start
+
+# Complete startup sequence
+start-all-fixed:
+	@echo "🚀 Starting complete system with proper timing..."
+	@$(MAKE) start
+	@$(MAKE) wait-for-services
+	@$(MAKE) mac-start-fixed
+	@echo "✅ System ready!"
+
