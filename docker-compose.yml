@@ -1,17 +1,14 @@
-
 services:
-  # === DATA LAYER ===
+  # Redis
   redis:
     image: redis:7-alpine
     container_name: synapse_redis
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
     networks:
       - synapse_network
 
+  # PostgreSQL
   postgres:
     image: postgres:15-alpine
     container_name: synapse_postgres
@@ -21,140 +18,73 @@ services:
       POSTGRES_PASSWORD: synapse123
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - synapse_network
 
-  # === CORE SERVICES ===
+  # Gateway
   gateway:
-    build:
-      context: .
-      dockerfile: services/gateway/Dockerfile
+    build: ./services/gateway
     container_name: synapse_gateway
     ports:
       - "8080:8080"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - POSTGRES_URL=postgresql://synapse:synapse123@postgres:5432/synapse
-      - ENVIRONMENT=development
     depends_on:
       - redis
       - postgres
-    volumes:
-      - ./services/gateway:/app/service
-      - ./shared:/app/shared
     networks:
       - synapse_network
 
+  # Dispatcher
   dispatcher:
-    build:
-      context: .
-      dockerfile: services/dispatcher/Dockerfile
+    build: ./services/dispatcher
     container_name: synapse_dispatcher
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - POSTGRES_URL=postgresql://synapse:synapse123@postgres:5432/synapse
+    ports:
+      - "8001:8001"
     depends_on:
       - redis
-      - postgres
-      - gateway
-    volumes:
-      - ./services/dispatcher:/app/service
-      - ./shared:/app/shared
     networks:
       - synapse_network
 
+  # Aggregator
   aggregator:
-    build:
-      context: .
-      dockerfile: services/aggregator/Dockerfile
+    build: ./services/aggregator
     container_name: synapse_aggregator
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - POSTGRES_URL=postgresql://synapse:synapse123@postgres:5432/synapse
+    ports:
+      - "8002:8002"
     depends_on:
       - redis
-      - postgres
-    volumes:
-      - ./services/aggregator:/app/service
-      - ./shared:/app/shared
     networks:
       - synapse_network
 
+  # Node
   node:
-    build:
-      context: .
-      dockerfile: services/node/Dockerfile
+    build: ./services/node
     container_name: synapse_node
-    environment:
-      - GATEWAY_URL=http://gateway:8080
-      - NODE_ID=node-001
-      - REGION=eu-west-1
+    ports:
+      - "8003:8003"
+    depends_on:
+      - redis
+    networks:
+      - synapse_network
+
+  # Dashboard
+  dashboard:
+    image: node:18-alpine
+    container_name: synapse_dashboard
+    working_dir: /app
+    volumes:
+      - ./dashboard:/app
+    ports:
+      - "3000:3000"
+    command: sh -c "npm install && npm start"
+    networks:
+      - synapse_network
     depends_on:
       - gateway
-      - dispatcher
-    volumes:
-      - ./services/node:/app/service
-      - ./shared:/app/shared
-      - /dev:/dev:ro
-    privileged: true
-    networks:
-      - synapse_network
-
-  # === MONITORING ===
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: synapse_prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-    networks:
-      - synapse_network
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: synapse_grafana
-    ports:
-      - "3001:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin123
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
-    depends_on:
-      - prometheus
-    networks:
-      - synapse_network
-
-  # === LOAD BALANCER ===
-  nginx:
-    image: nginx:alpine
-    container_name: synapse_nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-    depends_on:
-      - gateway
-    networks:
-      - synapse_network
-
-volumes:
-  redis_data:
-  postgres_data:
-  prometheus_data:
-  grafana_data:
 
 networks:
   synapse_network:
     driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:

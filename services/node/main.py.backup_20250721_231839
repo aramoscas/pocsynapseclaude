@@ -1,0 +1,183 @@
+# services/node/main.py
+import asyncio
+import json
+import logging
+import time
+import uuid
+import random
+import os
+from contextlib import asynccontextmanager
+import redis.asyncio as aioredis
+from fastapi import FastAPI
+import uvicorn
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Global variables
+redis_client = None
+node_id = os.getenv("NODE_ID", f"node_{uuid.uuid4().hex[:8]}")
+node_info = {
+    "id": node_id,
+    "name": f"Docker Node {node_id}",
+    "status": "active",
+    "gpu_model": "NVIDIA RTX 3080",
+    "cpu_cores": "16",
+    "memory_gb": "32",
+    "load": "0.0",
+    "jobs_completed": "0",
+    "capabilities": json.dumps(["llm", "vision"]),  # JSON string instead of list
+    "region": "docker-local",
+    "lat": "40.7128",
+    "lng": "-74.0060"
+}
+
+async def register_node():
+    """Register node in Redis"""
+    try:
+        # Store node info - all values as strings
+        await redis_client.hset(f"node:{node_id}:info", mapping=node_info)
+        
+        # Increment total nodes counter
+        total_nodes = await redis_client.incr("metrics:total_nodes")
+        
+        # Set node as active
+        await redis_client.setex(f"node:{node_id}:active", 60, "1")
+        
+        logger.info(f"Node {node_id} registered successfully. Total nodes: {total_nodes}")
+    except Exception as e:
+        logger.error(f"Failed to register node: {e}")
+        logger.error(f"Node info: {node_info}")
+
+async def send_heartbeat():
+    """Send heartbeat to keep node active"""
+    while True:
+        try:
+            # Update heartbeat
+            await redis_client.hset(f"node:{node_id}:info", "last_heartbeat", str(time.time()))
+            
+            # Refresh active status
+            await redis_client.setex(f"node:{node_id}:active", 60, "1")
+            
+            # Update load randomly for demo
+            load = random.uniform(0.1, 0.9)
+            await redis_client.hset(f"node:{node_id}:info", "load", str(load))
+            
+            logger.debug(f"Heartbeat sent for node {node_id}")
+            await asyncio.sleep(10)
+        except Exception as e:
+            logger.error(f"Heartbeat error: {e}")
+            await asyncio.sleep(10)
+
+async def process_jobs():
+    """Process assigned jobs"""
+    while True:
+        try:
+            # Check for assigned jobs
+            job_id = await redis_client.rpop(f"node:{node_id}:jobs")
+            if job_id:
+                logger.info(f"Processing job {job_id}")
+                
+                # Update job status
+                await redis_client.hset(f"job:{job_id}:info", "status", "running")
+                
+                # Simulate processing with progress updates
+                for progress in range(0, 101, 20):
+                    await redis_client.hset(f"job:{job_id}:info", "progress", str(progress))
+                    await asyncio.sleep(1)
+                
+                # Complete job
+                await redis_client.hset(f"job:{job_id}:info", mapping={
+                    "status": "completed",
+                    "progress": "100",
+                    "completed_at": str(time.time())
+                })
+                
+                # Update node stats
+                jobs_completed = int(node_info.get("jobs_completed", "0")) + 1
+                node_info["jobs_completed"] = str(jobs_completed)
+                await redis_client.hset(f"node:{node_id}:info", "jobs_completed", str(jobs_completed))
+                
+                # Decrement active jobs counter
+                await redis_client.decr("metrics:active_jobs")
+                
+                logger.info(f"Completed job {job_id}")
+            
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"Job processing error: {e}")
+            await asyncio.sleep(2)
+
+# Lifespan context manager (modern FastAPI approach)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    global redis_client
+    
+    try:
+        # Connect to Redis
+        redis_client = aioredis.from_url(
+            "redis://redis:6379",
+            encoding="utf-8",
+            decode_responses=True
+        )
+        
+        # Test connection
+        await redis_client.ping()
+        logger.info("Connected to Redis successfully")
+        
+        # Register node
+        await register_node()
+        
+        # Start background tasks
+        heartbeat_task = asyncio.create_task(send_heartbeat())
+        job_processor_task = asyncio.create_task(process_jobs())
+        
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        raise
+    
+    yield  # Server is running
+    
+    # Shutdown
+    try:
+        # Cancel background tasks
+        heartbeat_task.cancel()
+        job_processor_task.cancel()
+        
+        # Unregister node
+        if redis_client:
+            await redis_client.delete(f"node:{node_id}:info")
+            await redis_client.delete(f"node:{node_id}:active")
+            await redis_client.decr("metrics:total_nodes")
+            logger.info(f"Node {node_id} unregistered")
+            
+            # Close Redis connection
+            await redis_client.close()
+    except Exception as e:
+        logger.error(f"Shutdown error: {e}")
+
+# Create FastAPI app with lifespan
+app = FastAPI(
+    title="SynapseGrid Node",
+    lifespan=lifespan
+)
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "node_id": node_id,
+        "service": "node"
+    }
+
+@app.get("/status")
+async def status():
+    return {
+        "node_id": node_id,
+        "info": node_info,
+        "redis_connected": redis_client is not None
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8003)

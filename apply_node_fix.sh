@@ -1,3 +1,44 @@
+#!/bin/bash
+# apply_node_fix.sh
+# Applique la correction au service node
+
+set -e
+
+echo "🔧 Application de la correction au service node"
+echo "============================================="
+echo ""
+
+# Couleurs
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+print_status() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+# Étape 1: Arrêter le node
+print_info "Arrêt du service node..."
+docker-compose stop node
+
+# Étape 2: Sauvegarder l'ancien fichier
+print_info "Sauvegarde de l'ancien fichier..."
+cp services/node/main.py services/node/main.py.backup_$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+
+# Étape 3: Créer le nouveau fichier corrigé
+print_info "Création du fichier corrigé..."
+
+cat > services/node/main.py << 'EOF'
 # services/node/main.py - Version corrigée
 import asyncio
 import json
@@ -267,3 +308,63 @@ if __name__ == "__main__":
         reload=False,
         log_level="info"
     )
+EOF
+
+print_status "Fichier main.py créé"
+
+# Étape 4: Vérifier le fichier
+print_info "Vérification du fichier..."
+if grep -q "lifespan" services/node/main.py && grep -q "json.dumps" services/node/main.py; then
+    print_status "Le fichier contient les corrections nécessaires"
+else
+    print_error "Le fichier ne semble pas contenir toutes les corrections"
+fi
+
+# Étape 5: Reconstruire l'image Docker
+print_info "Reconstruction de l'image Docker..."
+docker-compose build --no-cache node
+
+# Étape 6: Redémarrer le service
+print_info "Redémarrage du service node..."
+docker-compose up -d node
+
+# Étape 7: Attendre un peu
+print_info "Attente du démarrage (5 secondes)..."
+sleep 5
+
+# Étape 8: Vérifier les logs
+print_info "Vérification des logs..."
+echo ""
+echo "=== Derniers logs du node ==="
+docker-compose logs --tail=30 node | grep -E "(ERROR|WARNING|INFO|Failed|Successfully|✅|❌)" || true
+
+# Étape 9: Tester la santé
+print_info "Test de santé du node..."
+echo ""
+if curl -s http://localhost:8003/health > /dev/null 2>&1; then
+    print_status "Le node répond correctement"
+    echo "Réponse health:"
+    curl -s http://localhost:8003/health | jq .
+else
+    print_error "Le node ne répond pas"
+fi
+
+# Étape 10: Vérifier les métriques
+print_info "Vérification des métriques..."
+echo ""
+echo "Métriques actuelles:"
+curl -s http://localhost:8080/metrics | jq . || echo "Gateway non accessible"
+
+echo ""
+print_status "Correction appliquée!"
+echo ""
+echo "🎯 Pour surveiller les logs en temps réel:"
+echo "   docker-compose logs -f node"
+echo ""
+echo "📊 Pour vérifier le statut du node:"
+echo "   curl http://localhost:8003/status | jq ."
+echo ""
+echo "Si le problème persiste, vérifiez:"
+echo "1. Que Docker a bien reconstruit l'image: docker images | grep node"
+echo "2. Les logs complets: docker-compose logs node"
+echo "3. L'état de Redis: docker exec synapse_redis redis-cli KEYS 'node:*'"

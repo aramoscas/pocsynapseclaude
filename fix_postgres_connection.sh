@@ -1,3 +1,122 @@
+#!/bin/bash
+# fix_postgres_connection.sh
+# Corrige les problèmes de connexion PostgreSQL
+
+set -e
+
+echo "🔧 Correction de la connexion PostgreSQL"
+echo "======================================="
+echo ""
+
+# Couleurs
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+print_status() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+# Étape 1: Vérifier l'état de PostgreSQL
+print_info "Étape 1: Vérification de PostgreSQL..."
+
+if docker ps | grep -q synapse_postgres; then
+    print_status "PostgreSQL est en cours d'exécution"
+    
+    # Vérifier si PostgreSQL est prêt
+    if docker exec synapse_postgres pg_isready -U synapse; then
+        print_status "PostgreSQL est prêt"
+    else
+        print_warning "PostgreSQL n'est pas encore prêt"
+    fi
+else
+    print_error "PostgreSQL n'est pas en cours d'exécution"
+    print_info "Démarrage de PostgreSQL..."
+    docker-compose up -d postgres
+    sleep 10
+fi
+
+# Étape 2: Tester la connexion
+print_info "Étape 2: Test de connexion à PostgreSQL..."
+
+docker exec synapse_postgres psql -U synapse -d synapse -c "SELECT 1;" || {
+    print_error "Impossible de se connecter à PostgreSQL"
+    print_info "Recréation du conteneur PostgreSQL..."
+    docker-compose stop postgres
+    docker-compose rm -f postgres
+    docker volume rm synapsegrid-poc_postgres_data 2>/dev/null || true
+    docker-compose up -d postgres
+    print_info "Attente de l'initialisation (20 secondes)..."
+    sleep 20
+}
+
+# Étape 3: Créer les tables si nécessaire
+print_info "Étape 3: Création des tables..."
+
+docker exec synapse_postgres psql -U synapse -d synapse << 'EOF'
+-- Créer les tables si elles n'existent pas
+CREATE TABLE IF NOT EXISTS jobs (
+    id VARCHAR(50) PRIMARY KEY,
+    model_name VARCHAR(100),
+    client_id VARCHAR(100),
+    status VARCHAR(20),
+    submitted_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    node_id VARCHAR(50),
+    priority INT DEFAULT 1,
+    input_data JSONB,
+    result_data JSONB,
+    error_message TEXT
+);
+
+CREATE TABLE IF NOT EXISTS nodes (
+    id VARCHAR(50) PRIMARY KEY,
+    name VARCHAR(100),
+    region VARCHAR(50),
+    status VARCHAR(20),
+    gpu_model VARCHAR(100),
+    capabilities JSONB,
+    registered_at TIMESTAMP DEFAULT NOW(),
+    last_heartbeat TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS metrics (
+    id SERIAL PRIMARY KEY,
+    metric_name VARCHAR(100),
+    metric_value FLOAT,
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+
+-- Créer les index
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_submitted ON jobs(submitted_at);
+CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
+CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp);
+
+-- Vérifier que tout est OK
+SELECT 'Tables créées avec succès' as status;
+EOF
+
+print_status "Tables PostgreSQL créées"
+
+# Étape 4: Créer une version du gateway qui gère mieux les erreurs
+print_info "Étape 4: Création d'un gateway amélioré..."
+
+cat > services/gateway/main_fixed.py << 'EOF'
 # services/gateway/main_fixed.py - Version avec meilleure gestion PostgreSQL
 import asyncio
 import json
@@ -406,3 +525,71 @@ if __name__ == "__main__":
         reload=False,
         log_level="info"
     )
+EOF
+
+# Étape 5: Options de correction
+
+echo ""
+echo "📋 Options de correction:"
+echo ""
+echo "Option 1: Utiliser le gateway corrigé (recommandé)"
+echo "  cp services/gateway/main_fixed.py services/gateway/main.py"
+echo "  docker-compose build gateway"
+echo "  docker-compose up -d gateway"
+echo ""
+echo "Option 2: Désactiver PostgreSQL temporairement"
+echo "  # Modifier docker-compose.yml et retirer postgres des depends_on du gateway"
+echo ""
+echo "Option 3: Forcer le redémarrage avec délai"
+echo "  docker-compose stop"
+echo "  docker-compose up -d postgres redis"
+echo "  sleep 20"
+echo "  docker-compose up -d"
+echo ""
+
+# Étape 6: Application automatique de la correction
+print_info "Application de la correction..."
+
+# Sauvegarder l'ancien fichier
+cp services/gateway/main.py services/gateway/main.py.old 2>/dev/null || true
+
+# Appliquer la correction
+cp services/gateway/main_fixed.py services/gateway/main.py
+
+# Reconstruire et redémarrer
+print_info "Reconstruction du gateway..."
+docker-compose build gateway
+
+print_info "Redémarrage des services dans le bon ordre..."
+docker-compose stop
+docker-compose up -d postgres redis
+print_info "Attente de l'initialisation de PostgreSQL (15 secondes)..."
+sleep 15
+docker-compose up -d
+
+print_info "Attente du démarrage complet (10 secondes)..."
+sleep 10
+
+# Vérification finale
+print_info "Vérification finale..."
+
+echo ""
+echo "État des services:"
+docker-compose ps
+
+echo ""
+echo "Test de santé:"
+curl -s http://localhost:8080/health | jq . || echo "Gateway pas encore prêt"
+
+echo ""
+echo "Test des métriques:"
+curl -s http://localhost:8080/metrics | jq . || echo "Métriques pas encore disponibles"
+
+echo ""
+print_status "Correction appliquée!"
+echo ""
+echo "Si le gateway ne démarre toujours pas, vérifiez les logs:"
+echo "  docker-compose logs gateway"
+echo ""
+echo "Pour voir les logs en temps réel:"
+echo "  docker-compose logs -f gateway"
