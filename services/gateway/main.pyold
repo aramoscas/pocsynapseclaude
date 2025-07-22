@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 from typing import Dict, Any, Optional, Set
-import datetime
+from datetime import datetime
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
