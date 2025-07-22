@@ -1,0 +1,2 @@
+99:                    UPDATE jobs 
+154:        cur.execute("SELECT 1")

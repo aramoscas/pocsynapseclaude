@@ -1,0 +1,29 @@
+                                            Table "public.jobs"
+      Column       |            Type             | Collation | Nullable |             Default              
+-------------------+-----------------------------+-----------+----------+----------------------------------
+ id                | integer                     |           | not null | nextval('jobs_id_seq'::regclass)
+ job_id            | character varying(64)       |           | not null | 
+ client_id         | character varying(64)       |           | not null | 
+ model_name        | character varying(100)      |           | not null | 
+ input_data        | text                        |           | not null | 
+ status            | character varying(20)       |           |          | 'queued'::character varying
+ created_at        | timestamp without time zone |           |          | CURRENT_TIMESTAMP
+ completed_at      | timestamp without time zone |           |          | 
+ submitted_at      | timestamp without time zone |           |          | 
+ priority          | integer                     |           |          | 1
+ estimated_cost    | numeric(10,6)               |           |          | 0.01
+ assigned_node     | character varying(64)       |           |          | 
+ execution_time_ms | integer                     |           |          | 
+ started_at        | timestamp without time zone |           |          | 
+ updated_at        | timestamp without time zone |           |          | CURRENT_TIMESTAMP
+ result            | text                        |           |          | 
+ error             | text                        |           |          | 
+Indexes:
+    "jobs_pkey" PRIMARY KEY, btree (id)
+    "idx_jobs_client" btree (client_id)
+    "idx_jobs_client_id" btree (client_id)
+    "idx_jobs_created_at" btree (created_at)
+    "idx_jobs_priority" btree (priority)
+    "idx_jobs_status" btree (status)
+    "jobs_job_id_key" UNIQUE CONSTRAINT, btree (job_id)
+

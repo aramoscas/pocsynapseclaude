@@ -1,5 +1,6 @@
--- Script d'initialisation complet avec toutes les colonnes
+-- Schéma de référence complet pour SynapseGrid
 
+-- Table clients complète
 CREATE TABLE IF NOT EXISTS clients (
     id SERIAL PRIMARY KEY,
     client_id VARCHAR(64) UNIQUE NOT NULL,
@@ -11,6 +12,7 @@ CREATE TABLE IF NOT EXISTS clients (
     last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table jobs complète
 CREATE TABLE IF NOT EXISTS jobs (
     id SERIAL PRIMARY KEY,
     job_id VARCHAR(64) UNIQUE NOT NULL,
@@ -28,9 +30,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    execution_time_ms INTEGER
+    execution_time_ms INTEGER,
+    CONSTRAINT jobs_status_check CHECK (status IN ('queued', 'dispatched', 'running', 'completed', 'failed', 'cancelled'))
 );
 
+-- Table nodes complète
 CREATE TABLE IF NOT EXISTS nodes (
     id SERIAL PRIMARY KEY,
     node_id VARCHAR(64) UNIQUE NOT NULL,
@@ -39,30 +43,14 @@ CREATE TABLE IF NOT EXISTS nodes (
     endpoint VARCHAR(255),
     status VARCHAR(20) DEFAULT 'offline',
     capabilities TEXT DEFAULT '{}',
+    gpu_info TEXT DEFAULT '{}',
     cpu_cores INTEGER DEFAULT 4,
     memory_gb DECIMAL(8, 2) DEFAULT 16.0,
-    max_concurrent INTEGER DEFAULT 1,
+    success_rate DECIMAL(5, 4) DEFAULT 1.0,
+    total_jobs INTEGER DEFAULT 0,
+    avg_latency_ms INTEGER DEFAULT 100,
     current_load INTEGER DEFAULT 0,
-    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    max_concurrent INTEGER DEFAULT 1,
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Index
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority);
-CREATE INDEX IF NOT EXISTS idx_jobs_client_id ON jobs(client_id);
-CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
-
--- Vue
-CREATE OR REPLACE VIEW v_pending_jobs AS
-SELECT job_id, client_id, model_name, input_data, priority, created_at
-FROM jobs WHERE status = 'queued'
-ORDER BY priority DESC, created_at ASC;
-
--- Données de test
-INSERT INTO clients (client_id, api_key_hash, nrg_balance) VALUES
-    ('test-client', 'test-hash', 1000.0),
-    ('deploy-test', 'deploy-hash', 500.0)
-ON CONFLICT DO NOTHING;
-
-GRANT ALL ON ALL TABLES IN SCHEMA public TO synapse;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO synapse;

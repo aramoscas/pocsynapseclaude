@@ -1,0 +1,15 @@
+                                         Table "public.clients"
+    Column    |            Type             | Collation | Nullable |               Default               
+--------------+-----------------------------+-----------+----------+-------------------------------------
+ id           | integer                     |           | not null | nextval('clients_id_seq'::regclass)
+ client_id    | character varying(64)       |           | not null | 
+ api_key_hash | character varying(64)       |           | not null | 
+ nrg_balance  | numeric(18,8)               |           |          | 100.0
+ created_at   | timestamp without time zone |           |          | CURRENT_TIMESTAMP
+ last_active  | timestamp without time zone |           |          | CURRENT_TIMESTAMP
+ total_jobs   | integer                     |           |          | 0
+ lear_balance | numeric(18,8)               |           |          | 10.0
+Indexes:
+    "clients_pkey" PRIMARY KEY, btree (id)
+    "clients_client_id_key" UNIQUE CONSTRAINT, btree (client_id)
+

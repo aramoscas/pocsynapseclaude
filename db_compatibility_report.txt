@@ -1,0 +1,28 @@
+=== RAPPORT DE COMPATIBILITÉ DES REQUÊTES SQL ===
+Date: $(date)
+
+
+=== SERVICE: gateway ===
+Problèmes: 0
+Requêtes SQL trouvées:
+97:                SELECT column_name 
+170:            cur.execute("SELECT 1")
+238:                query = f"INSERT INTO jobs ({','.join(insert_cols)}) VALUES ({placeholders})"
+293:                SELECT job_id, status, created_at 
+
+=== SERVICE: dispatcher ===
+Problèmes: 0
+Requêtes SQL trouvées:
+99:                    UPDATE jobs 
+154:        cur.execute("SELECT 1")
+
+=== SERVICE: aggregator ===
+Problèmes: 0
+Requêtes SQL trouvées:
+55:                    UPDATE jobs 
+68:                    UPDATE jobs 
+128:        cur.execute("SELECT 1")
+
+=== SERVICE: node ===
+Problèmes: 0
+Requêtes SQL trouvées:

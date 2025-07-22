@@ -1,0 +1,3 @@
+55:                    UPDATE jobs 
+68:                    UPDATE jobs 
+128:        cur.execute("SELECT 1")

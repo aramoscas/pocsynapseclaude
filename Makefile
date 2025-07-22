@@ -222,14 +222,23 @@ status:
 	@curl -s http://localhost:8080/metrics 2>/dev/null | jq . || echo "Gateway non disponible"
 
 # Health check
+#health-check:
+#	@echo "$(YELLOW)[HEALTH] Vérification de la santé des services...$(NC)"
+#	@echo -n "Gateway:    " && (curl -s http://localhost:8080/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
+#	@echo -n "Dispatcher: " && (curl -s http://localhost:8001/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
+#	@echo -n "Aggregator: " && (curl -s http://localhost:8002/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
+#	@echo -n "Node:       " && (curl -s http://localhost:8003/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
+#	@echo -n "Dashboard:  " && (curl -s http://localhost:3000 >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
 health-check:
 	@echo "$(YELLOW)[HEALTH] Vérification de la santé des services...$(NC)"
-	@echo -n "Gateway:    " && (curl -s http://localhost:8080/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
-	@echo -n "Dispatcher: " && (curl -s http://localhost:8001/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
-	@echo -n "Aggregator: " && (curl -s http://localhost:8002/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
-	@echo -n "Node:       " && (curl -s http://localhost:8003/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
-	@echo -n "Dashboard:  " && (curl -s http://localhost:3000 >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
-
+	@echo -n "Gateway API:     " && (curl -s http://localhost:8080/health >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
+	@echo -n "Dispatcher:      " && (docker ps | grep -q synapse_dispatcher && echo "$(GREEN)✅ Running$(NC)" || echo "$(RED)❌ Not running$(NC)")
+	@echo -n "Aggregator:      " && (docker ps | grep -q synapse_aggregator && echo "$(GREEN)✅ Running$(NC)" || echo "$(RED)❌ Not running$(NC)")
+	@echo -n "Node1:           " && (docker ps | grep -q synapse_node1 && echo "$(GREEN)✅ Running$(NC)" || echo "$(RED)❌ Not running$(NC)")
+	@echo -n "Node2:           " && (docker ps | grep -q synapse_node2 && echo "$(GREEN)✅ Running$(NC)" || echo "$(RED)❌ Not running$(NC)")
+	@echo -n "Dashboard:       " && (curl -s http://localhost:3000 >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
+	@echo -n "Redis:           " && (docker exec synapse_redis redis-cli ping >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
+	@echo -n "PostgreSQL:      " && (docker exec synapse_postgres pg_isready >/dev/null 2>&1 && echo "$(GREEN)✅ OK$(NC)" || echo "$(RED)❌ DOWN$(NC)")
 # Tests
 test:
 	@echo "$(YELLOW)[TEST] Lancement des tests d'intégration...$(NC)"

@@ -1,0 +1,4 @@
+97:                SELECT column_name 
+170:            cur.execute("SELECT 1")
+238:                query = f"INSERT INTO jobs ({','.join(insert_cols)}) VALUES ({placeholders})"
+293:                SELECT job_id, status, created_at 
