@@ -1,3 +1,69 @@
+#!/bin/bash
+# fix_dockerfile_context.sh - Correction du contexte de build
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}🔧 Fix du contexte de build Docker${NC}"
+echo ""
+
+# 1. Créer la structure correcte
+echo -e "${YELLOW}1. Création de la structure de fichiers...${NC}"
+
+# Structure des services
+mkdir -p services/{gateway,dispatcher,aggregator,node}
+mkdir -p sql
+
+# 2. Dockerfile Gateway corrigé (sans COPY sql/)
+echo -e "${YELLOW}2. Création du Dockerfile Gateway corrigé...${NC}"
+
+cat > services/gateway/Dockerfile << 'EOF'
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    python3-dev \
+    build-essential \
+    postgresql-client \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Verify aioredis is NOT installed
+RUN python -c "import sys; import subprocess; \
+    result = subprocess.run([sys.executable, '-m', 'pip', 'list'], capture_output=True, text=True); \
+    assert 'aioredis' not in result.stdout.lower(), 'aioredis should NOT be installed!'; \
+    print('✅ Verified: aioredis is NOT installed')"
+
+# Copy application
+COPY main.py .
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+EXPOSE 8080
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+EOF
+
+# 3. Gateway avec SQL intégré dans le code
+echo -e "${YELLOW}3. Création du Gateway avec SQL intégré...${NC}"
+
+cat > services/gateway/main.py << 'EOF'
 #!/usr/bin/env python3
 """
 SynapseGrid Gateway - Version avec SQL intégré
@@ -566,3 +632,152 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
+EOF
+
+echo -e "${GREEN}✅ Gateway avec SQL intégré créé${NC}"
+
+# 4. Docker-compose mis à jour (sans volume SQL pour gateway)
+echo -e "${YELLOW}4. Mise à jour du docker-compose.yml...${NC}"
+
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: synapse_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - synapse_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: synapse_postgres
+    environment:
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: synapse123
+      POSTGRES_DB: synapse
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - synapse_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: synapse_gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=synapse
+      - POSTGRES_PASSWORD=synapse123
+      - POSTGRES_DB=synapse
+    volumes:
+      - ./services/gateway:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - synapse_network
+    restart: unless-stopped
+
+networks:
+  synapse_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:
+EOF
+
+echo -e "${GREEN}✅ docker-compose.yml mis à jour${NC}"
+
+# 5. Requirements
+echo -e "${YELLOW}5. Création des requirements...${NC}"
+
+cat > services/gateway/requirements.txt << 'EOF'
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+redis==5.0.1
+hiredis==2.3.2
+pydantic==2.5.0
+python-jose==3.3.0
+httpx==0.25.2
+psutil==5.9.6
+aiofiles==23.2.1
+EOF
+
+echo -e "${GREEN}✅ Requirements créés${NC}"
+
+# 6. Script de déploiement simplifié
+echo -e "${YELLOW}6. Script de déploiement simplifié...${NC}"
+
+cat > deploy.sh << 'EOF'
+#!/bin/bash
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}🚀 Déploiement SynapseGrid${NC}"
+
+# 1. Build
+echo -e "${YELLOW}Build du gateway...${NC}"
+docker-compose build gateway
+
+# 2. Start services
+echo -e "${YELLOW}Démarrage des services...${NC}"
+docker-compose up -d
+
+# 3. Wait for services
+echo -e "${YELLOW}Attente des services...${NC}"
+sleep 10
+
+# 4. Configure Redis
+echo -e "${YELLOW}Configuration Redis...${NC}"
+docker exec synapse_redis redis-cli << 'REDIS'
+DEL nodes:registered
+SADD nodes:registered "node_default"
+SET node:node_default:info '{"node_id":"node_default","status":"available","capacity":1.0}'
+REDIS
+
+# 5. Test
+echo -e "${YELLOW}Test de santé...${NC}"
+curl -s http://localhost:8080/health | jq .
+
+echo -e "${GREEN}✅ Déploiement terminé!${NC}"
+echo ""
+echo "Logs: docker-compose logs -f gateway"
+EOF
+
+chmod +x deploy.sh
+
+echo ""
+echo -e "${GREEN}✅ Corrections appliquées!${NC}"
+echo ""
+echo "Pour déployer:"
+echo "./deploy.sh"

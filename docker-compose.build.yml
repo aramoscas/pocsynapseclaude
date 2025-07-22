@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_PROGRESS=plain
+    image: synapsegrid/gateway:latest
+
+  dispatcher:
+    build:
+      context: ./services/dispatcher
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_PROGRESS=plain
+    image: synapsegrid/dispatcher:latest
+
+  aggregator:
+    build:
+      context: ./services/aggregator
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_PROGRESS=plain
+    image: synapsegrid/aggregator:latest
+
+  node:
+    build:
+      context: ./services/node
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_PROGRESS=plain
+    image: synapsegrid/node:latest

@@ -4,26 +4,34 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    python3-dev \
+    build-essential \
+    postgresql-client \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# Copy requirements first
 COPY requirements.txt .
 
-# Install Python packages (NO aioredis)
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Verify NO aioredis is installed
-RUN pip list | grep -v aioredis || echo "✅ Good: aioredis NOT installed"
+# Verify aioredis is NOT installed
+RUN python -c "import sys; import subprocess; \
+    result = subprocess.run([sys.executable, '-m', 'pip', 'list'], capture_output=True, text=True); \
+    assert 'aioredis' not in result.stdout.lower(), 'aioredis should NOT be installed!'; \
+    print('✅ Verified: aioredis is NOT installed')"
 
 # Copy application
 COPY main.py .
 
-EXPOSE 8080
-
 # Health check
-HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-CMD ["python", "main.py"]
+EXPOSE 8080
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SynapseGrid Gateway - Version avec SQL intégré
+SynapseGrid Gateway - Version corrigée avec tables simplifiées
 """
 
 import os
@@ -26,117 +26,69 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# SQL d'initialisation intégré
+# SQL d'initialisation simplifié (sans pgcrypto)
 INIT_SQL = """
--- SynapseGrid Database Schema
 -- Drop existing tables
-DROP TABLE IF EXISTS job_executions CASCADE;
-DROP TABLE IF EXISTS transactions CASCADE;
-DROP TABLE IF EXISTS job_results CASCADE;
 DROP TABLE IF EXISTS jobs CASCADE;
-DROP TABLE IF EXISTS nodes CASCADE;
 DROP TABLE IF EXISTS clients CASCADE;
-DROP TABLE IF EXISTS regions CASCADE;
+DROP TABLE IF EXISTS nodes CASCADE;
 
--- Create clients table
-CREATE TABLE clients (
+-- Create clients table (simplified)
+CREATE TABLE IF NOT EXISTS clients (
     id SERIAL PRIMARY KEY,
     client_id VARCHAR(64) UNIQUE NOT NULL,
     api_key_hash VARCHAR(128) NOT NULL,
     nrg_balance DECIMAL(18, 8) DEFAULT 1000.0,
-    lear_balance DECIMAL(18, 8) DEFAULT 0.0,
-    total_jobs_submitted INTEGER DEFAULT 0,
-    total_nrg_spent DECIMAL(18, 8) DEFAULT 0.0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    status VARCHAR(20) DEFAULT 'active'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create nodes table
-CREATE TABLE nodes (
-    id SERIAL PRIMARY KEY,
-    node_id VARCHAR(64) UNIQUE NOT NULL,
-    node_type VARCHAR(50) DEFAULT 'docker',
-    region VARCHAR(50) DEFAULT 'eu-west-1',
-    ip_address INET,
-    port INTEGER DEFAULT 8003,
-    capacity DECIMAL(5, 2) DEFAULT 1.0,
-    current_load DECIMAL(5, 2) DEFAULT 0.0,
-    gpu_info JSONB DEFAULT '{}',
-    cpu_info JSONB DEFAULT '{}',
-    status VARCHAR(20) DEFAULT 'offline',
-    total_jobs_completed INTEGER DEFAULT 0,
-    total_nrg_earned DECIMAL(18, 8) DEFAULT 0.0,
-    reliability_score DECIMAL(5, 4) DEFAULT 1.0,
-    average_latency_ms INTEGER DEFAULT 100,
-    last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    metadata JSONB DEFAULT '{}'
-);
-
--- Create jobs table
-CREATE TABLE jobs (
+-- Create jobs table (simplified but complete)
+CREATE TABLE IF NOT EXISTS jobs (
     id VARCHAR(64) PRIMARY KEY,
-    job_id VARCHAR(64) UNIQUE NOT NULL,
-    client_id VARCHAR(64) NOT NULL,
+    job_id VARCHAR(64),
+    client_id VARCHAR(64),
     model_name VARCHAR(100) NOT NULL,
-    model_version VARCHAR(50),
-    input_data JSONB NOT NULL,
-    output_data JSONB,
+    input_data TEXT NOT NULL,
+    output_data TEXT,
     status VARCHAR(20) DEFAULT 'pending',
     priority INTEGER DEFAULT 1,
     estimated_cost DECIMAL(10, 6) DEFAULT 0.01,
-    actual_cost DECIMAL(10, 6),
     assigned_node VARCHAR(64),
-    node_id VARCHAR(64),
-    region_preference VARCHAR(50) DEFAULT 'eu-west-1',
-    gpu_requirements JSONB DEFAULT '{}',
     error_message TEXT,
-    error TEXT,
-    retry_count INTEGER DEFAULT 0,
-    max_retries INTEGER DEFAULT 3,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    execution_time_ms INTEGER,
-    compute_time_ms INTEGER,
-    queue_time_ms INTEGER,
-    tokens_used INTEGER,
-    tokens_processed INTEGER
+    completed_at TIMESTAMP
+);
+
+-- Create nodes table (simplified)
+CREATE TABLE IF NOT EXISTS nodes (
+    id SERIAL PRIMARY KEY,
+    node_id VARCHAR(64) UNIQUE NOT NULL,
+    node_type VARCHAR(50) DEFAULT 'docker',
+    status VARCHAR(20) DEFAULT 'offline',
+    capacity DECIMAL(5, 2) DEFAULT 1.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_client_id ON jobs(client_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_assigned_node ON jobs(assigned_node);
-CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_jobs_status_priority ON jobs(status, priority DESC);
-CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
-CREATE INDEX IF NOT EXISTS idx_nodes_region ON nodes(region);
-CREATE INDEX IF NOT EXISTS idx_clients_client_id ON clients(client_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_job_id ON jobs(job_id);
 
--- Insert default clients
+-- Insert default clients (without digest function)
 INSERT INTO clients (client_id, api_key_hash, nrg_balance) VALUES
-    ('test-client', encode(digest('test-token', 'sha256'), 'hex'), 1000.0),
-    ('deploy-test', encode(digest('deploy-token', 'sha256'), 'hex'), 1000.0),
-    ('cli', encode(digest('cli-token', 'sha256'), 'hex'), 500.0),
-    ('anonymous', encode(digest('anon-token', 'sha256'), 'hex'), 100.0)
-ON CONFLICT (client_id) DO UPDATE SET 
-    nrg_balance = EXCLUDED.nrg_balance,
-    last_active = CURRENT_TIMESTAMP;
-
--- Grant permissions
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO synapse;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO synapse;
+    ('test-client', 'test-hash', 1000.0),
+    ('deploy-test', 'deploy-hash', 1000.0),
+    ('cli', 'cli-hash', 500.0),
+    ('anonymous', 'anon-hash', 100.0)
+ON CONFLICT (client_id) DO NOTHING;
 """
 
 # FastAPI app
 app = FastAPI(
     title="SynapseGrid Gateway",
-    version="3.1.0",
-    description="Decentralized AI Infrastructure - SQL Embedded version"
+    version="3.2.0",
+    description="Decentralized AI Infrastructure - Simplified version"
 )
 
 # CORS
@@ -212,56 +164,86 @@ class AsyncRedisWrapper:
 async_redis = None
 
 async def init_database(conn):
-    """Initialiser la base de données avec le schéma complet"""
+    """Initialiser la base de données avec le schéma simplifié"""
     try:
         # Vérifier si les tables existent
         tables_exist = await conn.fetchval("""
             SELECT COUNT(*) FROM information_schema.tables 
             WHERE table_schema = 'public' 
-            AND table_name IN ('clients', 'jobs', 'nodes')
+            AND table_name IN ('clients', 'jobs')
         """)
         
-        if tables_exist < 3:
+        if tables_exist < 2:
             logger.info("Initializing database schema...")
             # Exécuter le SQL d'initialisation
             await conn.execute(INIT_SQL)
             logger.info("✅ Database schema initialized")
         else:
             logger.info("✅ Database schema already exists")
+            # S'assurer que les colonnes nécessaires existent
+            await conn.execute("""
+                -- Ajouter les colonnes manquantes si nécessaire
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='jobs' AND column_name='job_id') THEN
+                        ALTER TABLE jobs ADD COLUMN job_id VARCHAR(64);
+                    END IF;
+                    
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='jobs' AND column_name='assigned_node') THEN
+                        ALTER TABLE jobs ADD COLUMN assigned_node VARCHAR(64);
+                    END IF;
+                    
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='jobs' AND column_name='estimated_cost') THEN
+                        ALTER TABLE jobs ADD COLUMN estimated_cost DECIMAL(10,6) DEFAULT 0.01;
+                    END IF;
+                    
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='jobs' AND column_name='started_at') THEN
+                        ALTER TABLE jobs ADD COLUMN started_at TIMESTAMP;
+                    END IF;
+                    
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='jobs' AND column_name='completed_at') THEN
+                        ALTER TABLE jobs ADD COLUMN completed_at TIMESTAMP;
+                    END IF;
+                    
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='jobs' AND column_name='error_message') THEN
+                        ALTER TABLE jobs ADD COLUMN error_message TEXT;
+                    END IF;
+                END $$;
+            """)
             
     except Exception as e:
         logger.error(f"Error initializing database: {e}")
-        # Essayer au moins de créer les tables minimales
+        # Créer au minimum les tables essentielles
         try:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS clients (
-                    id SERIAL PRIMARY KEY,
-                    client_id VARCHAR(64) UNIQUE NOT NULL,
-                    api_key_hash VARCHAR(128) NOT NULL,
-                    nrg_balance DECIMAL(18, 8) DEFAULT 1000.0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    client_id VARCHAR(64) PRIMARY KEY,
+                    api_key_hash VARCHAR(128),
+                    nrg_balance DECIMAL(18, 8) DEFAULT 1000.0
                 );
                 
                 CREATE TABLE IF NOT EXISTS jobs (
                     id VARCHAR(64) PRIMARY KEY,
-                    job_id VARCHAR(64),
-                    client_id VARCHAR(64),
                     model_name VARCHAR(100) NOT NULL,
-                    input_data JSONB NOT NULL,
-                    status VARCHAR(20) DEFAULT 'pending',
-                    priority INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    input_data TEXT NOT NULL,
+                    status VARCHAR(20) DEFAULT 'pending'
                 );
             """)
-        except:
-            pass
+        except Exception as e2:
+            logger.error(f"Failed to create minimal tables: {e2}")
 
 @app.on_event("startup")
 async def startup():
     """Initialisation des connexions avec auto-correction"""
     global redis_client, db_pool, async_redis
     
-    logger.info("🚀 Starting SynapseGrid Gateway (SQL Embedded version)...")
+    logger.info("🚀 Starting SynapseGrid Gateway (Simplified version)...")
     
     # Redis connection
     try:
@@ -321,7 +303,7 @@ async def health():
     health_status = {
         "status": "healthy",
         "service": "gateway",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "timestamp": datetime.utcnow().isoformat(),
         "checks": {
             "redis": "unknown",
@@ -374,18 +356,18 @@ async def submit_job(
             raise HTTPException(status_code=503, detail="Database not available")
         
         async with db_pool.acquire() as conn:
-            # Ensure client exists
+            # Ensure client exists (simplified)
             try:
                 await conn.execute(
                     """INSERT INTO clients (client_id, api_key_hash, nrg_balance) 
                        VALUES ($1, $2, 100.0) 
-                       ON CONFLICT (client_id) DO UPDATE SET last_active = CURRENT_TIMESTAMP""",
+                       ON CONFLICT (client_id) DO NOTHING""",
                     client_id, hashlib.sha256(authorization.encode()).hexdigest()
                 )
             except Exception as e:
-                logger.warning(f"Client upsert failed: {e}")
+                logger.warning(f"Client insert failed: {e}")
             
-            # Insert job
+            # Insert job - try full then minimal
             try:
                 await conn.execute("""
                     INSERT INTO jobs (
@@ -398,12 +380,22 @@ async def submit_job(
                 )
             except Exception as e:
                 logger.warning(f"Full insert failed: {e}, trying minimal insert")
-                # Minimal insert
-                await conn.execute("""
-                    INSERT INTO jobs (id, model_name, input_data, status, priority)
-                    VALUES ($1, $2, $3, $4, $5)
-                """, job_id, job.model_name, json.dumps(job.input_data), 
-                    'pending', job.priority)
+                # Super minimal insert
+                try:
+                    await conn.execute("""
+                        INSERT INTO jobs (id, model_name, input_data, status)
+                        VALUES ($1, $2, $3, $4)
+                    """, job_id, job.model_name, json.dumps(job.input_data), 'pending')
+                    
+                    # Try to update additional fields
+                    await conn.execute("""
+                        UPDATE jobs 
+                        SET job_id = $2, client_id = $3, priority = $4
+                        WHERE id = $1
+                    """, job_id, job_id, client_id, job.priority)
+                except Exception as e2:
+                    logger.error(f"Even minimal insert failed: {e2}")
+                    raise
         
         # Add to Redis queue if available
         if async_redis and redis_client:
@@ -445,24 +437,58 @@ async def submit_job(
 
 @app.get("/job/{job_id}/status")
 async def get_job_status(job_id: str) -> JobStatus:
-    """Get job status"""
+    """Get job status with fallbacks for missing columns"""
     try:
         if not db_pool:
             raise HTTPException(status_code=503, detail="Database not available")
             
         async with db_pool.acquire() as conn:
-            job = await conn.fetchrow("""
-                SELECT 
-                    COALESCE(job_id, id) as job_id,
-                    status,
-                    COALESCE(assigned_node, node_id) as assigned_node,
-                    COALESCE(created_at, submitted_at, CURRENT_TIMESTAMP) as created_at,
-                    started_at,
-                    completed_at,
-                    COALESCE(error_message, error) as error_message
+            # First, check what columns exist
+            columns = await conn.fetch("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'jobs'
+            """)
+            
+            column_names = [col['column_name'] for col in columns]
+            
+            # Build query based on available columns
+            select_parts = []
+            select_parts.append("COALESCE(job_id, id) as job_id")
+            select_parts.append("status")
+            
+            if 'assigned_node' in column_names:
+                select_parts.append("assigned_node")
+            else:
+                select_parts.append("NULL as assigned_node")
+                
+            if 'created_at' in column_names:
+                select_parts.append("created_at")
+            else:
+                select_parts.append("CURRENT_TIMESTAMP as created_at")
+                
+            if 'started_at' in column_names:
+                select_parts.append("started_at")
+            else:
+                select_parts.append("NULL as started_at")
+                
+            if 'completed_at' in column_names:
+                select_parts.append("completed_at")
+            else:
+                select_parts.append("NULL as completed_at")
+                
+            if 'error_message' in column_names:
+                select_parts.append("error_message")
+            else:
+                select_parts.append("NULL as error_message")
+            
+            query = f"""
+                SELECT {', '.join(select_parts)}
                 FROM jobs 
-                WHERE job_id = $1 OR id = $1
-            """, job_id)
+                WHERE {'job_id' in column_names and 'job_id = $1 OR' or ''} id = $1
+            """
+            
+            job = await conn.fetchrow(query, job_id)
             
             if not job:
                 raise HTTPException(status_code=404, detail="Job not found")
@@ -558,7 +584,7 @@ async def get_metrics():
 async def root():
     return {
         "service": "SynapseGrid Gateway",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "status": "operational",
         "docs": "/docs"
     }

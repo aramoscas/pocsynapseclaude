@@ -1,3 +1,22 @@
+# Framework
 fastapi==0.104.1
-uvicorn==0.24.0
-redis[hiredis]==5.0.1
+uvicorn[standard]==0.24.0
+
+# Database
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
+# Redis - SANS aioredis
+redis==5.0.1
+hiredis==2.3.2
+
+# Utils
+pydantic==2.5.0
+python-jose==3.3.0
+prometheus-client==0.19.0
+httpx==0.25.2
+psutil==5.9.6
+
+# Async helpers
+aiofiles==23.2.1
+aiodns==3.1.1
