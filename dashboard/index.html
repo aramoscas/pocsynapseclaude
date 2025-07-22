@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SynapseGrid Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .healthy { background-color: #4CAF50; color: white; }
+        .degraded { background-color: #ff9800; color: white; }
+    </style>
+</head>
+<body>
+    <h1>SynapseGrid Dashboard</h1>
+    <div id="status" class="status">Loading...</div>
+    <script>
+        async function checkHealth() {
+            try {
+                const response = await fetch('http://localhost:8080/health');
+                const data = await response.json();
+                const statusDiv = document.getElementById('status');
+                statusDiv.className = 'status ' + (data.status === 'healthy' ? 'healthy' : 'degraded');
+                statusDiv.innerHTML = `System Status: ${data.status}<br>Services: ${JSON.stringify(data.services)}`;
+            } catch (e) {
+                document.getElementById('status').innerHTML = 'Error: ' + e.message;
+            }
+        }
+        checkHealth();
+        setInterval(checkHealth, 5000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+.PHONY: help start stop build clean test logs
+
+help:
+	@echo "SynapseGrid - Commandes disponibles:"
+	@echo "  make start    - Démarrer tous les services"
+	@echo "  make stop     - Arrêter tous les services"
+	@echo "  make build    - Reconstruire les images"
+	@echo "  make clean    - Nettoyer tout"
+	@echo "  make test     - Tester le gateway"
+	@echo "  make logs     - Voir les logs"
+
+start:
+	docker-compose up -d
+	@echo "✅ Services démarrés"
+	@echo "Gateway: http://localhost:8080"
+
+stop:
+	docker-compose down
+	@echo "✅ Services arrêtés"
+
+build:
+	docker-compose build --no-cache --pull
+	@echo "✅ Images reconstruites"
+
+clean:
+	docker-compose down -v
+	docker system prune -f
+	@echo "✅ Nettoyage complet"
+
+test:
+	python3 test_gateway.py
+
+logs:
+	docker-compose logs -f --tail=50
+
+restart: stop start

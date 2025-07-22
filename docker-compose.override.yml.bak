@@ -1,62 +1,47 @@
-# Development overrides for docker-compose
+version: '3.8'
 
 services:
   gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     environment:
-      - LOG_LEVEL=DEBUG
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/gateway:/app/services/gateway
-      - ./shared:/app/shared
-    command: python -u services/gateway/main.py
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   dispatcher:
-    environment:
-      - LOG_LEVEL=DEBUG
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/dispatcher:/app/services/dispatcher
-      - ./shared:/app/shared
-    command: python -u services/dispatcher/main.py
-
-  aggregator:
-    environment:
-      - LOG_LEVEL=DEBUG
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/aggregator:/app/services/aggregator
-      - ./shared:/app/shared
-    command: python -u services/aggregator/main.py
-
-  node:
-    environment:
-      - LOG_LEVEL=DEBUG
-      - PYTHONUNBUFFERED=1
-      - REDIS_URL=redis://redis:6379
-    volumes:
-      - ./services/node:/app/services/node
-      - ./shared:/app/shared
-    command: python -u services/node/main.py
-    
-  # Additional node for testing
-  node-2:
     build:
-      context: .
-      dockerfile: services/node/Dockerfile
-    container_name: synapse_node_2
+      context: ./services/dispatcher
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
     environment:
-      - GATEWAY_URL=http://gateway:8080
-      - NODE_ID=node-002
-      - REGION=eu-west-1
-      - REDIS_URL=redis://redis:6379
-      - LOG_LEVEL=DEBUG
-      - PYTHONUNBUFFERED=1
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
     depends_on:
-      - gateway
-      - dispatcher
-    volumes:
-      - ./services/node:/app/services/node
-      - ./shared:/app/shared
-    networks:
-      - synapse_network
-    command: python -u services/node/main.py
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+
+  postgres:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

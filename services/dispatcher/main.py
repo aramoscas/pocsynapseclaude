@@ -1,267 +1,161 @@
 #!/usr/bin/env python3
-"""
-SynapseGrid Dispatcher - Version propre sans aioredis
-"""
+"""SynapseGrid Dispatcher - Distribue les jobs aux nodes"""
 
 import asyncio
-import redis
-import asyncpg
 import json
 import logging
-from datetime import datetime
+import time
 import os
-from functools import partial
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+import redis
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class AsyncRedisWrapper:
-    """Wrapper pour Redis sync dans contexte async"""
-    def __init__(self, redis_client):
-        self.redis = redis_client
-        self.loop = asyncio.get_event_loop()
-    
-    async def brpop(self, key: str, timeout: int = 5):
-        return await self.loop.run_in_executor(
-            None, partial(self.redis.brpop, key, timeout=timeout)
-        )
-    
-    async def smembers(self, key: str):
-        return await self.loop.run_in_executor(
-            None, self.redis.smembers, key
-        )
-    
-    async def get(self, key: str):
-        return await self.loop.run_in_executor(
-            None, self.redis.get, key
-        )
-    
-    async def hincrby(self, name: str, key: str, amount: int = 1):
-        return await self.loop.run_in_executor(
-            None, self.redis.hincrby, name, key, amount
-        )
-    
-    async def publish(self, channel: str, message: str):
-        return await self.loop.run_in_executor(
-            None, self.redis.publish, channel, message
-        )
-    
-    async def lpush(self, key: str, value: str):
-        return await self.loop.run_in_executor(
-            None, self.redis.lpush, key, value
-        )
-    
-    async def setex(self, key: str, time: int, value: str):
-        return await self.loop.run_in_executor(
-            None, self.redis.setex, key, time, value
-        )
+# Configuration
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
+DISPATCH_INTERVAL = int(os.getenv("DISPATCH_INTERVAL", "5"))
 
-class Dispatcher:
-    def __init__(self):
-        self.redis_client = None
-        self.async_redis = None
-        self.db_pool = None
-        self.running = True
-        
-    async def start(self):
-        """Initialize connections"""
-        # Redis sync client
-        self.redis_client = redis.Redis(
-            host=os.getenv('REDIS_HOST', 'redis'),
-            port=int(os.getenv('REDIS_PORT', 6379)),
-            decode_responses=True
-        )
-        self.async_redis = AsyncRedisWrapper(self.redis_client)
-        logger.info("✅ Connected to Redis")
-        
-        # PostgreSQL
-        self.db_pool = await asyncpg.create_pool(
-            host=os.getenv('POSTGRES_HOST', 'postgres'),
-            port=int(os.getenv('POSTGRES_PORT', 5432)),
-            user=os.getenv('POSTGRES_USER', 'synapse'),
-            password=os.getenv('POSTGRES_PASSWORD', 'synapse123'),
-            database=os.getenv('POSTGRES_DB', 'synapse')
-        )
-        logger.info("✅ Connected to PostgreSQL")
-        
-        # Ensure at least one node exists
-        await self.ensure_default_node()
-        
-    async def ensure_default_node(self):
-        """S'assurer qu'au moins un node existe"""
-        nodes = await self.async_redis.smembers('nodes:registered')
-        if not nodes:
-            default_node = "node_dispatcher_default"
-            self.redis_client.sadd('nodes:registered', default_node)
-            self.redis_client.set(
-                f'node:{default_node}:info',
-                json.dumps({
-                    'node_id': default_node,
-                    'status': 'available',
-                    'capacity': 1.0,
-                    'current_load': 0
-                })
-            )
-            logger.info(f"✅ Created default node: {default_node}")
-    
-    async def get_best_node(self, job_data):
-        """Find the best available node"""
-        nodes = await self.async_redis.smembers('nodes:registered')
+# Connexions
+redis_client = None
+pg_conn = None
+executor = ThreadPoolExecutor(max_workers=5)
+
+def get_redis():
+    return redis.StrictRedis(host=REDIS_HOST, port=6379, decode_responses=True)
+
+def get_postgres():
+    return psycopg2.connect(
+        host=POSTGRES_HOST,
+        database="synapse",
+        user="synapse",
+        password="synapse123",
+        cursor_factory=RealDictCursor
+    )
+
+async def redis_async(func, *args):
+    """Wrapper async pour Redis"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, func, *args)
+
+async def select_best_node(region="eu-west-1"):
+    """Sélectionne le meilleur node disponible"""
+    try:
+        # Récupérer les nodes actifs depuis Redis
+        pattern = f"node:*:{region}:info"
+        keys = await redis_async(redis_client.keys, pattern)
         
         best_node = None
         best_score = -1
         
-        for node_id in nodes:
-            if isinstance(node_id, bytes):
-                node_id = node_id.decode('utf-8')
-                
-            node_info_raw = await self.async_redis.get(f'node:{node_id}:info')
-            if not node_info_raw:
-                continue
-                
-            try:
-                node_info = json.loads(node_info_raw)
-                if node_info.get('status') != 'available':
-                    continue
-                    
-                load = float(node_info.get('current_load', 1.0))
-                capacity = float(node_info.get('capacity', 1.0))
-                score = capacity * (1 - load)
+        for key in keys:
+            node_info = await redis_async(redis_client.hgetall, key)
+            if node_info.get("status") == "online":
+                # Score simple basé sur la charge
+                load = int(node_info.get("current_load", 0))
+                max_load = int(node_info.get("max_concurrent", 1))
+                score = (max_load - load) / max_load
                 
                 if score > best_score:
                     best_score = score
-                    best_node = node_id
-            except:
-                continue
-                
+                    best_node = node_info.get("node_id")
+        
         return best_node
-        
-    async def dispatch_job(self, job_data):
-        """Dispatch a job to a node"""
-        job_id = job_data['job_id']
-        
-        # Find best node
-        node_id = await self.get_best_node(job_data)
-        
+    except Exception as e:
+        logger.error(f"Erreur sélection node: {e}")
+        return None
+
+async def dispatch_job(job_data):
+    """Dispatche un job vers un node"""
+    job_id = job_data.get("job_id")
+    
+    try:
+        # Sélectionner un node
+        node_id = await select_best_node()
         if not node_id:
-            logger.warning(f"❌ No available nodes for job {job_id}")
+            logger.warning(f"Aucun node disponible pour {job_id}")
             return False
-            
-        logger.info(f"📍 Assigning job {job_id} to node {node_id}")
         
+        logger.info(f"📤 Dispatch job {job_id} vers {node_id}")
+        
+        # Assigner le job au node
+        job_data["assigned_node"] = node_id
+        job_data["status"] = "dispatched"
+        job_data["dispatched_at"] = datetime.utcnow().isoformat()
+        
+        # Pousser vers la queue du node
+        node_queue = f"node:{node_id}:jobs"
+        await redis_async(redis_client.lpush, node_queue, json.dumps(job_data))
+        
+        # Mettre à jour la DB
         try:
-            async with self.db_pool.acquire() as conn:
-                # Mettre à jour le job - gérer les différentes structures de table
-                result = await conn.execute("""
+            with pg_conn.cursor() as cur:
+                cur.execute("""
                     UPDATE jobs 
-                    SET status = 'assigned',
-                        node_id = $1
-                    WHERE job_id = $2 OR id = $2
-                """, node_id, job_id)
-                
-                # Si la colonne assigned_node existe, la mettre à jour aussi
-                await conn.execute("""
-                    UPDATE jobs 
-                    SET assigned_node = $1
-                    WHERE (job_id = $2 OR id = $2) 
-                    AND EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name='jobs' AND column_name='assigned_node'
-                    )
-                """, node_id, job_id)
-            
-            # Update node load
-            await self.async_redis.hincrby('nodes:load', node_id, 1)
-            
-            # Send job to node
-            await self.async_redis.publish(f'node:{node_id}:jobs', json.dumps(job_data))
-            
-            # Track assignment
-            await self.async_redis.setex(f'job:{job_id}:assigned', 300, node_id)
-            
-            logger.info(f"✅ Job {job_id} dispatched to {node_id}")
-            return True
-            
+                    SET status = 'dispatched', 
+                        assigned_node = %s,
+                        started_at = CURRENT_TIMESTAMP
+                    WHERE job_id = %s
+                """, (node_id, job_id))
+                pg_conn.commit()
         except Exception as e:
-            logger.error(f"Error dispatching job: {e}")
-            return False
-            
-    async def process_queue(self):
-        """Main processing loop"""
-        logger.info("🚀 Dispatcher started - processing queue")
+            logger.warning(f"Erreur update DB: {e}")
         
-        while self.running:
-            try:
-                # Get job from queue
-                result = await self.async_redis.brpop('jobs:queue:eu-west-1', timeout=5)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erreur dispatch: {e}")
+        return False
+
+async def dispatch_loop():
+    """Boucle principale de dispatch"""
+    logger.info("🔄 Démarrage de la boucle de dispatch...")
+    
+    while True:
+        try:
+            # Récupérer les jobs en attente
+            regions = ["eu-west-1", "us-east-1", "ap-south-1", "local"]
+            
+            for region in regions:
+                queue_key = f"jobs:queue:{region}"
                 
-                if result:
-                    _, job_json = result
+                # Récupérer un job de la queue
+                job_json = await redis_async(redis_client.rpop, queue_key)
+                if job_json:
                     job_data = json.loads(job_json)
-                    
-                    logger.info(f"📥 Processing job {job_data['job_id']}")
-                    
-                    # Try to dispatch
-                    if not await self.dispatch_job(job_data):
-                        # Put back in queue if dispatch failed
-                        await self.async_redis.lpush('jobs:queue:eu-west-1', job_json)
-                        await asyncio.sleep(5)
-                else:
-                    # Check for stuck jobs every 30 seconds
-                    await self.check_stuck_jobs()
-                        
-            except Exception as e:
-                logger.error(f"Error in dispatcher loop: {e}")
-                await asyncio.sleep(5)
-                
-    async def check_stuck_jobs(self):
-        """Check for jobs stuck in pending state"""
-        try:
-            async with self.db_pool.acquire() as conn:
-                # Requête adaptée aux différentes structures de table
-                stuck_jobs = await conn.fetch("""
-                    SELECT 
-                        COALESCE(job_id, id) as job_id,
-                        client_id,
-                        model_name,
-                        input_data,
-                        priority
-                    FROM jobs
-                    WHERE status = 'pending'
-                    AND (
-                        (created_at IS NOT NULL AND created_at < NOW() - INTERVAL '5 minutes')
-                        OR (submitted_at IS NOT NULL AND submitted_at < NOW() - INTERVAL '5 minutes')
-                    )
-                    LIMIT 10
-                """)
-                
-                for job in stuck_jobs:
-                    job_data = {
-                        'job_id': job['job_id'],
-                        'client_id': job['client_id'],
-                        'model_name': job['model_name'],
-                        'input_data': json.loads(job['input_data']) if isinstance(job['input_data'], str) else job['input_data'],
-                        'priority': job['priority']
-                    }
-                    await self.async_redis.lpush('jobs:queue:eu-west-1', json.dumps(job_data))
-                    logger.info(f"🔄 Re-queued stuck job {job['job_id']}")
-                    
+                    await dispatch_job(job_data)
+            
+            await asyncio.sleep(DISPATCH_INTERVAL)
+            
         except Exception as e:
-            logger.error(f"Error checking stuck jobs: {e}")
-                
-    async def run(self):
-        """Run the dispatcher"""
-        await self.start()
-        
-        try:
-            await self.process_queue()
-        finally:
-            self.redis_client.close()
-            await self.db_pool.close()
+            logger.error(f"Erreur dans la boucle: {e}")
+            await asyncio.sleep(DISPATCH_INTERVAL)
+
+async def main():
+    """Main dispatcher"""
+    global redis_client, pg_conn
+    
+    logger.info("🚀 Démarrage du Dispatcher...")
+    
+    # Connexions
+    redis_client = get_redis()
+    pg_conn = get_postgres()
+    
+    # Test connexions
+    redis_client.ping()
+    logger.info("✅ Redis connecté")
+    
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT 1")
+    logger.info("✅ PostgreSQL connecté")
+    
+    # Lancer la boucle de dispatch
+    await dispatch_loop()
 
 if __name__ == "__main__":
-    dispatcher = Dispatcher()
-    asyncio.run(dispatcher.run())
+    asyncio.run(main())

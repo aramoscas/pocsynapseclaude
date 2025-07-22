@@ -2,36 +2,27 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Dependencies système
 RUN apt-get update && apt-get install -y \
     gcc \
-    g++ \
-    python3-dev \
-    build-essential \
-    postgresql-client \
     curl \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first
+# Requirements
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Verify aioredis is NOT installed
-RUN python -c "import sys; import subprocess; \
-    result = subprocess.run([sys.executable, '-m', 'pip', 'list'], capture_output=True, text=True); \
-    assert 'aioredis' not in result.stdout.lower(), 'aioredis should NOT be installed!'; \
-    print('✅ Verified: aioredis is NOT installed')"
-
-# Copy application
+# Code
 COPY main.py .
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# User non-root
+RUN useradd -m -u 1000 synapse && chown -R synapse:synapse /app
+USER synapse
 
 EXPOSE 8080
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["python", "main.py"]

@@ -1,11 +1,33 @@
 version: '3.8'
 
 services:
+  # === DATA LAYER ===
+  postgres:
+    image: postgres:15-alpine
+    container_name: synapse_postgres
+    environment:
+      POSTGRES_DB: synapse
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: synapse123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init_simple.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - synapse_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     container_name: synapse_redis
     ports:
       - "6379:6379"
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
     networks:
@@ -16,25 +38,7 @@ services:
       timeout: 5s
       retries: 5
 
-  postgres:
-    image: postgres:15-alpine
-    container_name: synapse_postgres
-    environment:
-      POSTGRES_USER: synapse
-      POSTGRES_PASSWORD: synapse123
-      POSTGRES_DB: synapse
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - synapse_network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U synapse"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
+  # === CORE SERVICES ===
   gateway:
     build:
       context: ./services/gateway
@@ -45,16 +49,182 @@ services:
     environment:
       - REDIS_HOST=redis
       - POSTGRES_HOST=postgres
+      - POSTGRES_DB=synapse
       - POSTGRES_USER=synapse
       - POSTGRES_PASSWORD=synapse123
-      - POSTGRES_DB=synapse
-    volumes:
-      - ./services/gateway:/app
+      - ENVIRONMENT=development
     depends_on:
-      redis:
-        condition: service_healthy
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - synapse_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  dispatcher:
+    build:
+      context: ./services/dispatcher
+      dockerfile: Dockerfile
+    container_name: synapse_dispatcher
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=synapse
+      - POSTGRES_USER=synapse
+      - POSTGRES_PASSWORD=synapse123
+      - GATEWAY_URL=http://gateway:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    networks:
+      - synapse_network
+    restart: unless-stopped
+
+  aggregator:
+    build:
+      context: ./services/aggregator
+      dockerfile: Dockerfile
+    container_name: synapse_aggregator
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=synapse
+      - POSTGRES_USER=synapse
+      - POSTGRES_PASSWORD=synapse123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - synapse_network
+    restart: unless-stopped
+
+  # === NODE WORKERS ===
+  node1:
+    build:
+      context: ./services/node
+      dockerfile: Dockerfile
+    container_name: synapse_node1
+    environment:
+      - NODE_ID=node-docker-001
+      - NODE_TYPE=docker
+      - REGION=eu-west-1
+      - GATEWAY_URL=http://gateway:8080
+      - REDIS_HOST=redis
+      - MAX_CONCURRENT_JOBS=2
+    depends_on:
+      gateway:
+        condition: service_healthy
+      dispatcher:
+        condition: service_started
+    networks:
+      - synapse_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  node2:
+    build:
+      context: ./services/node
+      dockerfile: Dockerfile
+    container_name: synapse_node2
+    environment:
+      - NODE_ID=node-docker-002
+      - NODE_TYPE=docker
+      - REGION=eu-west-1
+      - GATEWAY_URL=http://gateway:8080
+      - REDIS_HOST=redis
+      - MAX_CONCURRENT_JOBS=2
+    depends_on:
+      gateway:
+        condition: service_healthy
+      dispatcher:
+        condition: service_started
+    networks:
+      - synapse_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  # === MONITORING ===
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: synapse_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - synapse_network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: synapse_grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - synapse_network
+    restart: unless-stopped
+
+  # === LOAD BALANCER ===
+  nginx:
+    image: nginx:alpine
+    container_name: synapse_nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - synapse_network
+    restart: unless-stopped
+
+  # === DASHBOARD (Optionnel) ===
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: synapse_dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8080
+      - REACT_APP_WS_URL=ws://localhost:8080
+    depends_on:
+      - gateway
     networks:
       - synapse_network
     restart: unless-stopped
@@ -64,5 +234,7 @@ networks:
     driver: bridge
 
 volumes:
-  redis_data:
   postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
