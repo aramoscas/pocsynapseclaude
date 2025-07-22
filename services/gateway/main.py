@@ -15,6 +15,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 import uvicorn
 
+def safe_datetime_format(dt):
+    """Formate un datetime en string de façon sécurisée"""
+    if isinstance(dt, str):
+        return dt
+    if hasattr(dt, 'isoformat'):
+        return dt.isoformat()
+    return str(dt)
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -213,7 +220,7 @@ async def get_current_metrics():
 async def health_check():
     return {
         "status": "healthy",
-        "timestamp": datetime.datetime.datetime.utcnow().isoformat(),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
         "services": {
             "redis": redis_client is not None,
             "postgres": postgres_pool is not None,
@@ -315,7 +322,7 @@ async def submit_job(
         
         # Generate job ID
         job_id = generate_job_id()
-        submitted_at = datetime.datetime.datetime.datetime.utcnow()
+        submitted_at = datetime.datetime.utcnow().isoformat()
         submitted_at_str = submitted_at.isoformat()
         
         # Store job in Redis
