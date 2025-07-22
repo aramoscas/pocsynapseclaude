@@ -50,7 +50,7 @@ services:
     restart: unless-stopped
 
   dispatcher:
-    image: synapsegrid-dispatcher
+    build: ./services/dispatcher
     container_name: synapse_dispatcher
     ports:
       - "8001:8001"
@@ -62,7 +62,7 @@ services:
       - synapse_network
 
   aggregator:
-    image: synapsegrid-aggregator
+    build: ./services/aggregator
     container_name: synapse_aggregator
     ports:
       - "8002:8002"

@@ -1,3 +1,38 @@
+#!/bin/bash
+
+# Quick DateTime Fix for SynapseGrid Gateway
+# Fixes: invalid input for query argument $5: expected datetime.datetime instance, got 'str'
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}🔧 SynapseGrid DateTime Fix${NC}"
+echo "=============================="
+
+# Check if we're in the right directory
+if [ ! -f "docker-compose.yml" ] || [ ! -d "services/gateway" ]; then
+    echo -e "${RED}❌ Error: Please run this script from the SynapseGrid root directory${NC}"
+    exit 1
+fi
+
+echo -e "${YELLOW}📋 Problem:${NC} Gateway service failing with PostgreSQL datetime error"
+echo -e "${YELLOW}📋 Solution:${NC} Replace string timestamps with datetime objects in database inserts"
+echo ""
+
+# Backup current gateway file
+echo -e "${BLUE}💾 Creating backup...${NC}"
+cp services/gateway/main.py services/gateway/main.py.backup.$(date +%Y%m%d_%H%M%S)
+echo "✅ Backup created: services/gateway/main.py.backup.$(date +%Y%m%d_%H%M%S)"
+
+# Apply the fix
+echo -e "${BLUE}🔧 Applying datetime fix...${NC}"
+cat > services/gateway/main.py << 'EOF'
 # services/gateway/main.py - DATETIME FIXED VERSION
 import asyncio
 import json
@@ -292,3 +327,59 @@ async def list_nodes():
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8080, log_level="info")
+EOF
+
+echo "✅ DateTime fix applied to services/gateway/main.py"
+
+# Restart Gateway service
+echo -e "${BLUE}🔄 Restarting Gateway service...${NC}"
+if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose restart gateway
+elif command -v docker >/dev/null 2>&1 && docker compose --help >/dev/null 2>&1; then
+    docker compose restart gateway
+else
+    echo -e "${YELLOW}⚠️  Could not restart automatically. Please run:${NC}"
+    echo "   docker-compose restart gateway"
+    echo "   OR"
+    echo "   docker compose restart gateway"
+    exit 0
+fi
+
+echo -e "${GREEN}✅ Gateway service restarted${NC}"
+
+# Wait a moment for service to start
+echo -e "${BLUE}⏳ Waiting for Gateway to be ready...${NC}"
+sleep 5
+
+# Test the fix
+echo -e "${BLUE}🧪 Testing the fix...${NC}"
+if curl -s --max-time 5 http://localhost:8080/health >/dev/null 2>&1; then
+    echo -e "${GREEN}✅ Gateway is responding to health checks${NC}"
+    
+    # Show health response
+    echo -e "${BLUE}📊 Health status:${NC}"
+    curl -s http://localhost:8080/health | jq . 2>/dev/null || curl -s http://localhost:8080/health
+    
+    echo ""
+    echo -e "${GREEN}🎉 DateTime fix applied successfully!${NC}"
+    echo ""
+    echo -e "${BLUE}✨ What was fixed:${NC}"
+    echo "  • PostgreSQL datetime inserts now use proper datetime objects"
+    echo "  • Timezone handling improved with UTC timezone"
+    echo "  • Separate formatting functions for JSON vs Database"
+    echo "  • Enhanced error logging and connection handling"
+    echo ""
+    echo -e "${BLUE}🧪 Test the fix:${NC}"
+    echo "  make job-test              # Test job submission"
+    echo "  make submit-job            # Submit a single job"
+    echo "  make flow-monitor          # Monitor job flow"
+    
+else
+    echo -e "${YELLOW}⚠️  Gateway may still be starting. Check logs with:${NC}"
+    echo "   docker logs synapse-gateway"
+    echo "   OR"
+    echo "   make logs"
+fi
+
+echo ""
+echo -e "${GREEN}✅ Fix complete!${NC}"
