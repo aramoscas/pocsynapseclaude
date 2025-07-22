@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 from typing import Dict, Any, Optional, Set
-import datetime
+from datetime import datetime
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
@@ -213,7 +213,7 @@ async def get_current_metrics():
 async def health_check():
     return {
         "status": "healthy",
-        "timestamp": datetime.datetime.datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "redis": redis_client is not None,
             "postgres": postgres_pool is not None,
@@ -315,8 +315,7 @@ async def submit_job(
         
         # Generate job ID
         job_id = generate_job_id()
-        submitted_at = datetime.datetime.datetime.datetime.utcnow()
-        submitted_at_str = submitted_at.isoformat()
+        submitted_at = datetime.utcnow().isoformat()
         
         # Store job in Redis
         job_data = {
@@ -328,7 +327,7 @@ async def submit_job(
             "status": "pending",
             "progress": 0,
             "client_id": x_client_id or "unknown",
-            "submitted_at": submitted_at_str,
+            "submitted_at": submitted_at,
             "start_time": str(time.time())
         }
         

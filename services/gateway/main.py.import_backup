@@ -213,7 +213,7 @@ async def get_current_metrics():
 async def health_check():
     return {
         "status": "healthy",
-        "timestamp": datetime.datetime.datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "redis": redis_client is not None,
             "postgres": postgres_pool is not None,
@@ -315,7 +315,7 @@ async def submit_job(
         
         # Generate job ID
         job_id = generate_job_id()
-        submitted_at = datetime.datetime.datetime.datetime.utcnow()
+        submitted_at = datetime.datetime.utcnow()
         submitted_at_str = submitted_at.isoformat()
         
         # Store job in Redis

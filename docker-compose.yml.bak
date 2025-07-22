@@ -1,14 +1,14 @@
 services:
-  # === DATA LAYER ===
+  # Redis
   redis:
     image: redis:7-alpine
     container_name: synapse_redis
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes
     networks:
       - synapse_network
 
+  # PostgreSQL
   postgres:
     image: postgres:15-alpine
     container_name: synapse_postgres
@@ -18,73 +18,55 @@ services:
       POSTGRES_PASSWORD: synapse123
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/postgres-healthcheck.sh:/healthcheck.sh:ro
-      - ./sql:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD", "/healthcheck.sh"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
     networks:
       - synapse_network
 
-  # === CORE SERVICES ===
+  # Gateway
   gateway:
     build: ./services/gateway
     container_name: synapse_gateway
     ports:
       - "8080:8080"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - POSTGRES_URL=postgresql://synapse:synapse123@postgres:5432/synapse
     depends_on:
-      redis:
-        condition: service_started
-      postgres:
-        condition: service_healthy
+      - redis
+      - postgres
     networks:
       - synapse_network
-    restart: unless-stopped
 
+  # Dispatcher
   dispatcher:
     build: ./services/dispatcher
     container_name: synapse_dispatcher
     ports:
       - "8001:8001"
-    environment:
-      - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
     networks:
       - synapse_network
 
+  # Aggregator
   aggregator:
     build: ./services/aggregator
     container_name: synapse_aggregator
     ports:
       - "8002:8002"
-    environment:
-      - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
     networks:
       - synapse_network
 
+  # Node
   node:
     build: ./services/node
     container_name: synapse_node
     ports:
       - "8003:8003"
-    environment:
-      - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
     networks:
       - synapse_network
 
+  # Dashboard
   dashboard:
     image: node:18-alpine
     container_name: synapse_dashboard
@@ -93,8 +75,6 @@ services:
       - ./dashboard:/app
     ports:
       - "3000:3000"
-    environment:
-      - REACT_APP_API_URL=http://localhost:8080
     command: sh -c "npm install && npm start"
     networks:
       - synapse_network
@@ -106,8 +86,5 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:
   redis_data:
-
-  prometheus_data:
-  grafana_data:
+  postgres_data:
